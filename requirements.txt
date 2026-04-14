@@ -1,0 +1,13 @@
+# Core
+alpaca-py>=0.20.0
+anthropic>=0.25.0
+pandas>=2.0.0
+pandas-ta>=0.3.14b
+requests>=2.31.0
+
+# Scheduling (optional — used if you switch from the simple sleep loop)
+APScheduler>=3.10.0
+
+# Dev / testing
+pytest>=8.0.0
+python-dotenv>=1.0.0
