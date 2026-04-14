@@ -28,3 +28,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# KEYS
+set_env.bat
