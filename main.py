@@ -4,6 +4,9 @@ Ties together data fetching, signal computation, AI decisions, risk checks, and 
 Run with: python main.py
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import logging
 import signal
 import sys
