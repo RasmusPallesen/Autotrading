@@ -18,11 +18,10 @@ class AlpacaDataFetcher:
     def __init__(self, config):
         try:
             from alpaca.data.historical import StockHistoricalDataClient
-            from alpaca.data.requests import StockBarsRequest
-            from alpaca.data.timeframe import TimeFrame
+            from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest
             from alpaca.trading.client import TradingClient
             self._StockBarsRequest = StockBarsRequest
-            self._TimeFrame = TimeFrame
+            self._StockLatestTradeRequest = StockLatestTradeRequest
             self.data_client = StockHistoricalDataClient(
                 config.api_key, config.secret_key
             )
@@ -39,12 +38,8 @@ class AlpacaDataFetcher:
         lookback_bars: int = 50,
         timeframe: str = "1Min",
     ) -> Dict[str, pd.DataFrame]:
-        """
-        Returns a dict of {symbol: DataFrame} with OHLCV columns.
-        DataFrame is sorted ascending by timestamp.
-        """
+        """Fetch bars per symbol individually to work around IEX batch limitations."""
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-        from itertools import groupby
 
         tf_map = {
             "1Min": TimeFrame.Minute,
@@ -58,32 +53,27 @@ class AlpacaDataFetcher:
         end = datetime.now(timezone.utc)
         start = end - timedelta(hours=max(lookback_bars * 2, 120))
 
-        request = self._StockBarsRequest(
-            symbol_or_symbols=symbols,
-            timeframe=tf,
-            start=start,
-            end=end,
-            limit=lookback_bars,
-            feed="iex",
-        )
-
-        bars = self.data_client.get_stock_bars(request)
         result: Dict[str, pd.DataFrame] = {}
 
-        # Handle both dict-style and list-style responses from alpaca-py
-        data = bars.data if hasattr(bars, "data") else bars
-
-        if isinstance(data, dict):
-            items = list(data.items())
-        else:
-            sorted_bars = sorted(data, key=lambda b: b.symbol)
-            items = [
-                (symbol, list(group))
-                for symbol, group in groupby(sorted_bars, key=lambda b: b.symbol)
-            ]
-
-        for symbol, bar_list in items:
+        for symbol in symbols:
             try:
+                request = self._StockBarsRequest(
+                    symbol_or_symbols=symbol,
+                    timeframe=tf,
+                    start=start,
+                    end=end,
+                    limit=lookback_bars,
+                    feed="iex",
+                )
+                bars = self.data_client.get_stock_bars(request)
+                data = bars.data if hasattr(bars, "data") else bars
+
+                if not data:
+                    logger.warning("No data returned for %s", symbol)
+                    continue
+
+                bar_list = data.get(symbol) if isinstance(data, dict) else data
+
                 if hasattr(bar_list, "df"):
                     df = bar_list.df.copy()
                 else:
@@ -100,8 +90,9 @@ class AlpacaDataFetcher:
                 df = df.sort_index().tail(lookback_bars)
                 result[symbol] = df
                 logger.debug("Fetched %d bars for %s", len(df), symbol)
+
             except Exception as e:
-                logger.warning("Could not process bars for %s: %s", symbol, e)
+                logger.warning("Could not fetch bars for %s: %s", symbol, e)
 
         return result
 
@@ -135,9 +126,11 @@ class AlpacaDataFetcher:
 
     def get_latest_price(self, symbol: str) -> Optional[float]:
         """Returns latest trade price for a symbol."""
-        from alpaca.data.requests import StockLatestTradeRequest
         try:
-            req = StockLatestTradeRequest(symbol_or_symbols=[symbol])
+            req = self._StockLatestTradeRequest(
+                symbol_or_symbols=[symbol],
+                feed="iex",
+            )
             trade = self.data_client.get_stock_latest_trade(req)
             return float(trade[symbol].price)
         except Exception as e:
