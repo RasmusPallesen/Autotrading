@@ -4,7 +4,6 @@ Ties together data fetching, signal computation, AI decisions, risk checks, and 
 Run with: python main.py
 """
 
-
 import logging
 import signal
 import sys
@@ -25,7 +24,7 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("logs/agent.log", encoding="utf-8"),
+        logging.FileHandler("logs/agent.log"),
     ],
 )
 logger = logging.getLogger("main")
@@ -151,10 +150,13 @@ def run_loop(
             if existing:
                 result = executor.sell(symbol=decision.symbol, close_all=True)
                 if result:
+                    sold_value = existing.get("market_value", 0)
+                    risk.record_sale(sold_value)
                     store.log_execution(
                         order_id=result.get("order_id", ""),
                         symbol=decision.symbol,
                         side="SELL",
+                        notional=sold_value,
                     )
             else:
                 logger.info("[%s] SELL signal but no open position.", decision.symbol)
@@ -165,7 +167,7 @@ def run_loop(
 def main():
     validate_config()
 
-    logger.info(" Trading Agent starting up")
+    logger.info("🤖 Trading Agent starting up")
     logger.info("  Paper trading: %s", config.alpaca.paper)
     logger.info("  Loop interval: %ds", config.agent.loop_interval_seconds)
     logger.info("  Watchlist: %s", config.watchlist.stocks)

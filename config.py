@@ -34,8 +34,8 @@ class CoinbaseConfig:
 @dataclass
 class AnthropicConfig:
     api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
-    model: str = "claude-opus-4-5"
-    max_tokens: int = 1024
+    model: str = "claude-haiku-4-5-20251001"   # ← much cheaper than Opus
+    max_tokens: int = 512                        # ← reduce from 1024
 
 
 @dataclass
@@ -56,7 +56,7 @@ class RiskConfig:
 class WatchlistConfig:
     stocks: List[str] = field(default_factory=lambda: [
         "AAPL", "MSFT", "NVDA", "TSLA", "AMD",
-        "META", "GOOGL", "AMZN", "COIN", "MSTR"
+        "META", "GOOGL", "AMZN", "COIN", "MSTR", "NVO"
     ])
     crypto: List[str] = field(default_factory=lambda: [
         "BTC-USD", "ETH-USD", "SOL-USD"
@@ -66,7 +66,7 @@ class WatchlistConfig:
 @dataclass
 class AgentConfig:
     # How often the agent runs its decision loop (seconds)
-    loop_interval_seconds: int = 60
+    loop_interval_seconds: int = 120
     # Lookback window for technical indicators (candles)
     indicator_lookback: int = 50
     # Minimum AI confidence score (0-1) to act on a signal
