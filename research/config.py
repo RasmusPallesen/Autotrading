@@ -39,11 +39,11 @@ class AnthropicConfig:
 
 @dataclass
 class RiskConfig:
-    max_position_pct: float = 0.03
+    max_position_pct: float = 0.10
     stop_loss_pct: float = 0.05
     take_profit_pct: float = 0.15
-    max_daily_drawdown_pct: float = 0.02
-    max_open_positions: int = 25
+    max_daily_drawdown_pct: float = 0.03
+    max_open_positions: int = 10
 
 
 @dataclass
@@ -142,7 +142,7 @@ class WatchlistConfig:
 
 @dataclass
 class AgentConfig:
-    loop_interval_seconds: int = 900   # 15 min — cost efficient
+    loop_interval_seconds: int = 300   # 5 min — cost efficient
     indicator_lookback: int = 50
     min_confidence: float = 0.65
     log_level: str = "INFO"

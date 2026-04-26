@@ -21,8 +21,6 @@ for three high-conviction sectors:
 2. AI Software & Platforms (Microsoft, Alphabet, Meta, Palantir, C3.ai)
 3. Green Energy Technology (solar, wind, EV charging, hydrogen fuel cells)
 4. MedTech — Diabetes Treatment & Monitoring (Novo Nordisk, Eli Lilly GLP-1 drugs,
-5. Market Scanner Discoveries — stocks flagged for unusual price/volume activity;
-   treat with higher caution but act if technical signals confirm the move
    Dexcom/Abbott CGM devices, Insulet/Tandem insulin pumps, Medtronic)
 
 Your trading mandate:
@@ -120,9 +118,8 @@ class AIDecisionEngine:
         portfolio_context: dict,
         existing_position: Optional[dict] = None,
         sector_bias_boost: float = 0.05,
-        research_signal: Optional[dict] = None,
     ) -> TradeDecision:
-        user_prompt = self._build_prompt(snapshot, portfolio_context, existing_position, research_signal)
+        user_prompt = self._build_prompt(snapshot, portfolio_context, existing_position)
 
         try:
             response = self.client.messages.create(
@@ -138,21 +135,6 @@ class AIDecisionEngine:
             if decision.sector in PREFERRED_SECTORS and decision.action != "HOLD":
                 original = decision.confidence
                 decision.confidence = min(decision.confidence + sector_bias_boost, 0.95)
-                # Additional boost if research agent has high conviction on same direction
-            if research_signal and decision.action != "HOLD":
-                research_conviction = float(research_signal.get("conviction", 0))
-                research_sentiment = research_signal.get("sentiment", "NEUTRAL")
-                sentiment_matches = (
-                    (decision.action == "BUY" and research_sentiment == "BULLISH") or
-                    (decision.action == "SELL" and research_sentiment == "BEARISH")
-                )
-                if sentiment_matches and research_conviction >= 0.65:
-                    boost = (research_conviction - 0.65) * 0.5
-                    decision.confidence = min(decision.confidence + boost, 0.95)
-                    logger.debug(
-                        "[%s] Research boost +%.2f (research=%.0f%% %s)",
-                        snapshot.symbol, boost, research_conviction * 100, research_sentiment,
-                )
                 if decision.confidence != original:
                     logger.debug(
                         "[%s] Sector bias applied: %.2f -> %.2f",
@@ -174,13 +156,11 @@ class AIDecisionEngine:
         portfolio_context: dict,
         positions: dict,
         sector_bias_boost: float = 0.05,
-        research_signals: dict = None,
     ) -> List[TradeDecision]:
         decisions = []
         for snapshot in snapshots:
             existing = positions.get(snapshot.symbol)
-            research_signal = (research_signals or {}).get(snapshot.symbol)
-            decision = self.decide(snapshot, portfolio_context, existing, sector_bias_boost, research_signal)
+            decision = self.decide(snapshot, portfolio_context, existing, sector_bias_boost)
             sector_tag = f" [{decision.sector}]" if decision.sector != "GENERAL" else ""
             logger.info(
                 "[%s]%s %s (conf=%.2f, urgency=%s): %s",
@@ -190,8 +170,8 @@ class AIDecisionEngine:
             decisions.append(decision)
         return decisions
 
-    def _build_prompt(self, snapshot, portfolio_context, existing_position, research_signal=None):
-        sector = SECTOR_MAP.get(snapshot.symbol, "GENERAL")  # Unknown scanner discoveries default to GENERAL
+    def _build_prompt(self, snapshot, portfolio_context, existing_position):
+        sector = SECTOR_MAP.get(snapshot.symbol, "GENERAL")
         sector_note = (
             f"\nSector: {sector} — this is a PREFERRED sector, apply confidence boost if signals support it."
             if sector in PREFERRED_SECTORS

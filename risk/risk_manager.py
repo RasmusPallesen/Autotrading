@@ -45,14 +45,12 @@ class RiskManager:
         positions: list,
         min_confidence: float,
     ) -> RiskVerdict:
-        """
-        Validate a trade decision against all risk rules.
-        Returns RiskVerdict with approved=True only if all checks pass.
-        """
-        if self._killed:
-            return RiskVerdict(False, "Kill switch is active — no trading until reset.")
+        """Validate a trade decision against all risk rules."""
 
-        # --- Daily drawdown kill switch ---
+        if self._killed:
+            return RiskVerdict(False, "Kill switch is active -- no trading until reset.")
+
+        # Daily drawdown kill switch
         equity = portfolio.get("equity", 0)
         if self._daily_start_equity is None:
             self._daily_start_equity = equity
@@ -67,57 +65,64 @@ class RiskManager:
                 )
                 return RiskVerdict(False, f"Daily drawdown limit hit ({drawdown*100:.2f}%). Agent shut down.")
 
-        # --- HOLD passes through ---
+        # HOLD passes through
         if decision.action == "HOLD":
-            return RiskVerdict(True, "HOLD — no trade to validate.")
+            return RiskVerdict(True, "HOLD -- no trade to validate.")
 
-        # --- Confidence threshold ---
+        # SELL passes through with no notional check
+        if decision.action == "SELL":
+            if decision.confidence < min_confidence:
+                return RiskVerdict(
+                    False,
+                    f"Confidence {decision.confidence:.2f} below threshold {min_confidence:.2f}",
+                )
+            return RiskVerdict(True, "SELL approved.", adjusted_notional=0)
+
+        # BUY checks below
         if decision.confidence < min_confidence:
             return RiskVerdict(
                 False,
                 f"Confidence {decision.confidence:.2f} below threshold {min_confidence:.2f}",
             )
 
-        # --- Position count limit (BUY only) ---
+        # Max open positions
         current_symbols = {p["symbol"] for p in positions}
         is_new_position = decision.symbol not in current_symbols
-        if decision.action == "BUY" and is_new_position:
-            if len(current_symbols) >= self.max_open_positions:
-                return RiskVerdict(
-                    False,
-                    f"Max open positions ({self.max_open_positions}) reached.",
-                )
+        if is_new_position and len(current_symbols) >= self.max_open_positions:
+            return RiskVerdict(
+                False,
+                f"Max open positions ({self.max_open_positions}) reached.",
+            )
 
-        # --- Position size cap ---
+        # Position size
         requested_pct = min(decision.suggested_position_pct, self.max_position_pct)
         notional = equity * requested_pct
 
-        # --- T+2 Settlement check (cash account) ---
-        if decision.action == "BUY":
-            total_cash = portfolio.get("cash", 0)
-            can_buy, settlement_reason = self.settlement.can_buy(notional, total_cash)
-            if not can_buy:
-                return RiskVerdict(False, f"T+2 settlement block: {settlement_reason}")
+        # T+2 settlement check
+        total_cash = max(
+            portfolio.get("cash", 0),
+            portfolio.get("buying_power", 0),
+        )
+        can_buy, settlement_reason = self.settlement.can_buy(notional, total_cash)
+        if not can_buy:
+            return RiskVerdict(False, f"T+2 settlement block: {settlement_reason}")
 
-            # Also check raw buying power
-            buying_power = portfolio.get("buying_power", 0)
-            if notional > buying_power:
-                notional = buying_power * 0.95
-                if notional <= 0:
-                    return RiskVerdict(False, "Insufficient buying power.")
-                logger.warning("Notional reduced to fit buying power: $%.2f", notional)
+        # Buying power cap
+        buying_power = portfolio.get("buying_power", 0)
+        if notional > buying_power:
+            notional = buying_power * 0.95
+            if notional <= 0:
+                return RiskVerdict(False, "Insufficient buying power.")
+            logger.warning("Notional reduced to fit buying power: $%.2f", notional)
 
-        # --- Minimum trade size ---
+        # Minimum trade size
         if notional < 10:
             return RiskVerdict(False, f"Trade notional ${notional:.2f} below minimum $10.")
 
-        return RiskVerdict(True, f"Approved — notional=${notional:.2f}", adjusted_notional=notional)
+        return RiskVerdict(True, f"Approved -- notional=${notional:.2f}", adjusted_notional=notional)
 
     def record_sale(self, notional: float):
-        """
-        Call this after every SELL execution so the settlement
-        tracker knows those funds are pending T+2.
-        """
+        """Record a sale for T+2 settlement tracking."""
         self.settlement.record_sale(notional)
 
     def compute_stop_and_target(self, current_price: float, decision: TradeDecision) -> tuple:
