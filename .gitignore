@@ -31,3 +31,8 @@ Thumbs.db
 
 # KEYS
 set_env.bat
+
+# Batchfiles
+start_agent.bat
+start_dashboard.bat
+start_research.bat
