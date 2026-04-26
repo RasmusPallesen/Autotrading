@@ -21,6 +21,10 @@ from storage.trade_store import TradeStore
 from storage.research_store import ResearchStore
 
 # Logging setup
+# Create logs directory if it doesn't exist (needed for local runs)
+import os as _os
+_os.makedirs("logs", exist_ok=True)
+
 logging.basicConfig(
     level=getattr(logging, config.agent.log_level, logging.INFO),
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
