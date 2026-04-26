@@ -19,17 +19,13 @@ from emailer import send_alert
 from storage.research_store import ResearchStore
 from data.market_scanner import MarketScanner
 
-# Create logs directory if it doesn't exist
-_log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
-os.makedirs(_log_dir, exist_ok=True)
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler(
-            os.path.join(_log_dir, "research.log"),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "research.log"),
             encoding="utf-8"
         ),
     ],

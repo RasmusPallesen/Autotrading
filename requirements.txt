@@ -4,6 +4,7 @@ anthropic>=0.25.0
 pandas>=2.0.0
 pandas-ta>=0.3.14b
 requests>=2.31.0
+streamlit>=1.35.0
 
 # Scheduling (optional — used if you switch from the simple sleep loop)
 APScheduler>=3.10.0

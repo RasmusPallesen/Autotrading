@@ -1,0 +1,389 @@
+"""
+Main agent loop.
+Ties together data fetching, signal computation, AI decisions, risk checks, and execution.
+Dynamically expands watchlist with high-conviction scanner discoveries each tick.
+Run with: python main.py
+"""
+
+import logging
+import signal
+import sys
+import time
+from datetime import datetime, timezone
+
+import config
+from agent.decision_engine import AIDecisionEngine
+from data.alpaca_fetcher import AlpacaDataFetcher
+from execution.alpaca_executor import AlpacaExecutor
+from risk.risk_manager import RiskManager
+from signals.technical import compute_signals
+from storage.trade_store import TradeStore
+from storage.research_store import ResearchStore
+
+# Logging setup
+logging.basicConfig(
+    level=getattr(logging, config.agent.log_level, logging.INFO),
+    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+    handlers=[
+        logging.StreamHandler(open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)),
+        logging.FileHandler("logs/agent.log", encoding="utf-8"),
+    ],
+)
+logger = logging.getLogger("main")
+
+# Minimum conviction for a scanner discovery to be traded
+SCANNER_TRADE_THRESHOLD = float(config.agent.min_confidence)
+
+def validate_config():
+    missing = []
+    if not config.alpaca.api_key:
+        missing.append("ALPACA_API_KEY")
+    if not config.alpaca.secret_key:
+        missing.append("ALPACA_SECRET_KEY")
+    if not config.anthropic.api_key:
+        missing.append("ANTHROPIC_API_KEY")
+    if missing:
+        logger.critical("Missing environment variables: %s", ", ".join(missing))
+        sys.exit(1)
+
+
+# Minimum research conviction to include a symbol in the trading cycle
+RESEARCH_GATE_THRESHOLD = 0.55
+
+
+def get_dynamic_symbols(
+    research_store: ResearchStore,
+    full_universe: list,
+    min_conviction: float = RESEARCH_GATE_THRESHOLD,
+) -> tuple:
+    """
+    Build the active trading symbol list from research signals.
+
+    Logic:
+    - All 42 universe symbols are eligible
+    - A symbol is included if:
+        a) Research agent has an active signal with conviction >= min_conviction, OR
+        b) It is a scanner discovery with conviction >= SCANNER_TRADE_THRESHOLD
+    - Symbols with no research signal or low conviction are skipped this tick
+    - Returns (active_symbols, discovered_symbols, research_signals_map)
+    """
+    research_signals = {}
+    active_symbols = []
+    discovered_symbols = []
+    skipped = []
+
+    try:
+        active_signals = research_store.get_all_active()
+        research_signals = {s["symbol"]: s for s in active_signals}
+    except Exception as e:
+        logger.warning("Could not load research signals: %s", e)
+        # Fall back to full universe if DB unavailable
+        return full_universe, [], {}
+
+    # Gate universe symbols through research signals
+    for symbol in full_universe:
+        signal = research_signals.get(symbol)
+        if signal:
+            conviction = float(signal.get("conviction", 0))
+            sentiment = signal.get("sentiment", "NEUTRAL")
+            if conviction >= min_conviction:
+                active_symbols.append(symbol)
+            else:
+                skipped.append(f"{symbol}({conviction:.0%})")
+        else:
+            # No research signal yet — include anyway so agent always
+            # evaluates the core watchlist even before research runs
+            if symbol in config.watchlist.stocks:
+                active_symbols.append(symbol)
+            else:
+                skipped.append(f"{symbol}(no signal)")
+
+    # Add scanner discoveries not already in universe
+    for symbol, signal in research_signals.items():
+        if symbol not in full_universe:
+            conviction = float(signal.get("conviction", 0))
+            summary = signal.get("summary", "").lower()
+            is_scanner_hit = (
+                any(kw in summary for kw in [
+                    "gainer", "volume", "scanner", "active", "explosive",
+                    "surge", "spike", "rally", "turnaround", "upgrade",
+                    "breakout", "momentum", "jump", "soar", "beat",
+                    "record", "growth", "demand"
+                ])
+                or conviction >= 0.70
+            )
+            if conviction >= SCANNER_TRADE_THRESHOLD and is_scanner_hit:
+                active_symbols.append(symbol)
+                discovered_symbols.append(symbol)
+                logger.info(
+                    "Scanner discovery added: %s (conviction=%.0f%%)",
+                    symbol, conviction * 100,
+                )
+
+    # Deduplicate while preserving order
+    active_symbols = list(dict.fromkeys(active_symbols))
+
+    if skipped:
+        logger.info("Skipped (low/no conviction): %s", ", ".join(skipped[:10]))
+
+    return active_symbols, discovered_symbols, research_signals
+
+
+def run_loop(
+    data_fetcher: AlpacaDataFetcher,
+    signal_engine,
+    ai_engine: AIDecisionEngine,
+    executor: AlpacaExecutor,
+    risk: RiskManager,
+    store: TradeStore,
+    research_store: ResearchStore = None,
+):
+    logger.info("--- Agent loop tick ---")
+
+    # 1. Portfolio state
+    try:
+        portfolio = data_fetcher.get_account()
+        positions = data_fetcher.get_positions()
+    except Exception as e:
+        logger.error("Failed to fetch portfolio state: %s", e)
+        return
+
+    logger.info(
+        "Portfolio: equity=$%.2f | cash=$%.2f | positions=%d",
+        portfolio["equity"], portfolio["cash"], len(positions),
+    )
+
+    positions_map = {p["symbol"]: p for p in positions}
+
+    # 2. Build dynamic symbol list from full research universe
+    full_universe = config.watchlist.all_symbols
+    all_symbols, discovered_symbols, research_signals = get_dynamic_symbols(
+        research_store,
+        full_universe,
+        min_conviction=RESEARCH_GATE_THRESHOLD,
+    )
+
+    logger.info(
+        "Active this tick: %d/%d symbols (research-gated) + %d scanner discoveries",
+        len(all_symbols) - len(discovered_symbols),
+        len(full_universe),
+        len(discovered_symbols),
+    )
+
+    # 3. Fetch market data for all symbols
+    bars = data_fetcher.get_bars(
+        symbols=all_symbols,
+        lookback_bars=config.agent.indicator_lookback,
+        timeframe="1Min",
+    )
+
+    # 4. Compute technical signals
+    snapshots = []
+    for symbol in all_symbols:
+        df = bars.get(symbol)
+        snapshot = compute_signals(symbol, df)
+        if snapshot:
+            snapshots.append(snapshot)
+        elif symbol in discovered_symbols:
+            logger.warning(
+                "Scanner discovery %s has no market data — skipping this tick",
+                symbol,
+            )
+
+    if not snapshots:
+        logger.warning("No valid snapshots computed this tick.")
+        return
+
+    # 5. AI decisions — pass research signals for full context
+    decisions = ai_engine.decide_batch(
+        snapshots,
+        portfolio,
+        positions_map,
+        sector_bias_boost=config.agent.sector_bias_boost,
+        research_signals=research_signals,
+    )
+
+    # 6. Rank all decisions by conviction before acting
+    # SELLs always go first (free up cash), then BUYs ranked by conviction
+    sells = sorted(
+        [d for d in decisions if d.action == "SELL"],
+        key=lambda d: d.confidence, reverse=True,
+    )
+    buys = sorted(
+        [d for d in decisions if d.action == "BUY"],
+        key=lambda d: d.confidence, reverse=True,
+    )
+    holds = [d for d in decisions if d.action == "HOLD"]
+
+    logger.info(
+        "Decision summary: %d SELLs | %d BUYs (ranked by conviction) | %d HOLDs",
+        len(sells), len(buys), len(holds),
+    )
+    if buys:
+        logger.info(
+            "BUY ranking: %s",
+            " > ".join(f"{d.symbol}({d.confidence:.0%})" for d in buys),
+        )
+
+    # Log HOLDs first (no action needed)
+    for decision in holds:
+        store.log_decision(
+            symbol=decision.symbol,
+            action=decision.action,
+            confidence=decision.confidence,
+            rationale=decision.rationale,
+            urgency=decision.urgency,
+            approved=True,
+            approval_reason="HOLD -- no trade to validate.",
+            notional=None,
+        )
+
+    # Execute SELLs first to free up cash
+    for decision in sells + buys:
+        is_discovery = decision.symbol in discovered_symbols
+
+        if is_discovery:
+            logger.info(
+                "*** SCANNER DISCOVERY [%s] %s conf=%.2f -- %s",
+                decision.symbol, decision.action,
+                decision.confidence, decision.rationale,
+            )
+
+        # Re-fetch portfolio state after each SELL so cash reflects freed funds
+        if decision.action == "BUY" and sells:
+            try:
+                portfolio = data_fetcher.get_account()
+                positions = data_fetcher.get_positions()
+                positions_map = {p["symbol"]: p for p in positions}
+            except Exception as e:
+                logger.warning("Could not refresh portfolio state: %s", e)
+
+        verdict = risk.check(
+            decision=decision,
+            portfolio=portfolio,
+            positions=positions,
+            min_confidence=config.agent.min_confidence,
+        )
+
+        store.log_decision(
+            symbol=decision.symbol,
+            action=decision.action,
+            confidence=decision.confidence,
+            rationale=decision.rationale,
+            urgency=decision.urgency,
+            approved=verdict.approved,
+            approval_reason=verdict.reason,
+            notional=verdict.adjusted_notional,
+        )
+
+        if not verdict.approved:
+            logger.info("[%s] BLOCKED -- %s", decision.symbol, verdict.reason)
+            continue
+
+        current_price = data_fetcher.get_latest_price(decision.symbol)
+        if not current_price:
+            logger.warning("[%s] Could not fetch latest price, skipping.", decision.symbol)
+            continue
+
+        stop_loss, take_profit = risk.compute_stop_and_target(current_price, decision)
+        notional = verdict.adjusted_notional
+
+        if decision.action == "BUY":
+            result = executor.buy(
+                symbol=decision.symbol,
+                notional=notional,
+                stop_loss_price=stop_loss,
+                take_profit_price=take_profit,
+            )
+            if result:
+                store.log_execution(
+                    order_id=result["order_id"],
+                    symbol=decision.symbol,
+                    side="BUY",
+                    notional=notional,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                )
+                if is_discovery:
+                    logger.info(
+                        "*** SCANNER DISCOVERY TRADED: %s BUY $%.2f",
+                        decision.symbol, notional,
+                    )
+                # Deduct from local portfolio cash estimate so subsequent
+                # buys in this tick see updated available funds
+                portfolio["cash"] = max(0, float(portfolio.get("cash", 0)) - notional)
+                portfolio["buying_power"] = max(0, float(portfolio.get("buying_power", 0)) - notional)
+
+        elif decision.action == "SELL":
+            existing = positions_map.get(decision.symbol)
+            if existing:
+                result = executor.sell(symbol=decision.symbol, close_all=True)
+                if result:
+                    market_value = existing.get("market_value")
+                    if not market_value:
+                        qty = float(existing.get("qty", 0))
+                        price = float(existing.get("current_price") or existing.get("avg_entry_price", 0))
+                        market_value = qty * price
+                    sold_value = float(market_value)
+                    risk.record_sale(sold_value)
+                    store.log_execution(
+                        order_id=result.get("order_id", ""),
+                        symbol=decision.symbol,
+                        side="SELL",
+                        notional=sold_value,
+                    )
+            else:
+                logger.info("[%s] SELL signal but no open position.", decision.symbol)
+
+    logger.info("--- Tick complete ---")
+
+
+def main():
+    validate_config()
+
+    logger.info("Trading Agent starting up")
+    logger.info("  Paper trading: %s", config.alpaca.paper)
+    logger.info("  Loop interval: %ds", config.agent.loop_interval_seconds)
+    logger.info("  Base watchlist: %s", config.watchlist.stocks)
+    logger.info("  Scanner trade threshold: %.0f%%", SCANNER_TRADE_THRESHOLD * 100)
+
+    data_fetcher   = AlpacaDataFetcher(config.alpaca)
+    ai_engine      = AIDecisionEngine(config.anthropic)
+    executor       = AlpacaExecutor(config.alpaca)
+    risk           = RiskManager(config.risk)
+    store          = TradeStore()
+    research_store = ResearchStore()
+
+    try:
+        account = data_fetcher.get_account()
+        risk.reset_daily(account["equity"])
+    except Exception as e:
+        logger.warning("Could not fetch initial equity for risk reset: %s", e)
+
+    running = True
+
+    def _shutdown(sig, frame):
+        nonlocal running
+        logger.warning("Shutdown signal received -- finishing current tick.")
+        running = False
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    while running:
+        try:
+            run_loop(data_fetcher, None, ai_engine, executor, risk, store, research_store)
+        except Exception as e:
+            logger.exception("Unhandled exception in agent loop: %s", e)
+
+        if running:
+            logger.info("Sleeping %ds until next tick...", config.agent.loop_interval_seconds)
+            time.sleep(config.agent.loop_interval_seconds)
+
+    store.close()
+    research_store.close()
+    logger.info("Trading agent shut down cleanly.")
+
+
+if __name__ == "__main__":
+    main()
