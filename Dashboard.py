@@ -282,6 +282,7 @@ else:
     st.warning("Could not fetch live account data from Alpaca. Check ALPACA_API_KEY in your dashboard startup.")
 
 # ── Open Positions ─────────────────────────────────────────────────────────────
+
 if positions:
     st.subheader("Open Positions")
     pos_df = pd.DataFrame([{

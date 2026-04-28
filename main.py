@@ -19,6 +19,8 @@ from risk.risk_manager import RiskManager
 from signals.technical import compute_signals
 from storage.trade_store import TradeStore
 from storage.research_store import ResearchStore
+from data.massive_indicators import MassiveIndicatorFetcher
+from data.earnings_calendar import EarningsCalendar
 
 # Logging setup
 # Create logs directory if it doesn't exist (needed for local runs)
@@ -37,6 +39,22 @@ logger = logging.getLogger("main")
 
 # Minimum conviction for a scanner discovery to be traded
 SCANNER_TRADE_THRESHOLD = float(config.agent.min_confidence)
+
+
+from datetime import time as _dtime
+
+
+def is_market_open() -> bool:
+    """
+    Returns True if NYSE is currently open.
+    NYSE hours: Mon-Fri 09:30-16:00 ET = 13:30-20:00 UTC = 15:30-22:00 Copenhagen.
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    if now.weekday() >= 5:
+        return False
+    return _dtime(13, 30) <= now.time() <= _dtime(20, 0)
+
 
 def validate_config():
     missing = []
@@ -85,9 +103,17 @@ def get_dynamic_symbols(
         return full_universe, [], {}
 
     # Gate universe symbols through research signals
+    core_watchlist = set(config.watchlist.stocks)
     for symbol in full_universe:
         signal = research_signals.get(symbol)
-        if signal:
+        if symbol in core_watchlist:
+            # Core watchlist ALWAYS evaluates — never gated out
+            active_symbols.append(symbol)
+            if signal:
+                conviction = float(signal.get("conviction", 0))
+                if conviction < min_conviction:
+                    logger.debug("[%s] Core symbol included despite low conviction %.0f%%", symbol, conviction*100)
+        elif signal:
             conviction = float(signal.get("conviction", 0))
             sentiment = signal.get("sentiment", "NEUTRAL")
             if conviction >= min_conviction:
@@ -95,12 +121,7 @@ def get_dynamic_symbols(
             else:
                 skipped.append(f"{symbol}({conviction:.0%})")
         else:
-            # No research signal yet — include anyway so agent always
-            # evaluates the core watchlist even before research runs
-            if symbol in config.watchlist.stocks:
-                active_symbols.append(symbol)
-            else:
-                skipped.append(f"{symbol}(no signal)")
+            skipped.append(f"{symbol}(no signal)")
 
     # Add scanner discoveries not already in universe
     for symbol, signal in research_signals.items():
@@ -141,6 +162,8 @@ def run_loop(
     risk: RiskManager,
     store: TradeStore,
     research_store: ResearchStore = None,
+    massive_fetcher=None,
+    earnings_cal=None,
 ):
     logger.info("--- Agent loop tick ---")
 
@@ -198,13 +221,46 @@ def run_loop(
         logger.warning("No valid snapshots computed this tick.")
         return
 
-    # 5. AI decisions — pass research signals for full context
+    # 5. Fetch Massive end-of-day indicators for cross-validation
+    massive_indicators = {}
+    if massive_fetcher and massive_fetcher.api_key:
+        for symbol in all_symbols[:2]:  # 2 symbols x 2 calls x 1.5s = ~6s per tick
+            ind = massive_fetcher.fetch_all(symbol)
+            if any(v is not None for v in [ind.rsi_14, ind.ema_9, ind.macd_value]):
+                massive_indicators[symbol] = ind
+                logger.debug("Massive indicators fetched for %s", symbol)
+
+    # 6. Earnings calendar check
+    earnings_events = {}
+    pre_earnings_symbols = []
+    post_earnings_symbols = []
+    if earnings_cal:
+        try:
+            earnings_events = earnings_cal.get_events(all_symbols)
+            pre_earnings_symbols = earnings_cal.get_pre_earnings_symbols(all_symbols)
+            post_earnings_symbols = earnings_cal.get_post_earnings_symbols(all_symbols)
+            if pre_earnings_symbols:
+                logger.warning(
+                    "PRE-EARNINGS CAUTION: %s reporting soon -- agent will be conservative",
+                    pre_earnings_symbols,
+                )
+            if post_earnings_symbols:
+                logger.info(
+                    "POST-EARNINGS REACTION: %s reported recently -- checking for beat/miss",
+                    post_earnings_symbols,
+                )
+        except Exception as e:
+            logger.warning("Earnings calendar error: %s", e)
+
+    # 7. AI decisions — pass research signals, Massive indicators, and earnings context
     decisions = ai_engine.decide_batch(
         snapshots,
         portfolio,
         positions_map,
         sector_bias_boost=config.agent.sector_bias_boost,
         research_signals=research_signals,
+        massive_indicators=massive_indicators,
+        earnings_events=earnings_events,
     )
 
     # 6. Rank all decisions by conviction before acting
@@ -261,6 +317,26 @@ def run_loop(
                 positions_map = {p["symbol"]: p for p in positions}
             except Exception as e:
                 logger.warning("Could not refresh portfolio state: %s", e)
+
+        # Suppress new BUYs within 48h of earnings — binary risk
+        if (decision.action == "BUY" and
+                decision.symbol in pre_earnings_symbols and
+                decision.symbol not in positions_map):
+            logger.info(
+                "[%s] BUY suppressed -- earnings in <48h (pre-earnings caution)",
+                decision.symbol,
+            )
+            store.log_decision(
+                symbol=decision.symbol,
+                action="HOLD",
+                confidence=decision.confidence,
+                rationale=f"Pre-earnings caution: {decision.rationale}",
+                urgency="LOW",
+                approved=False,
+                approval_reason="Earnings within 48h -- no new positions",
+                notional=None,
+            )
+            continue
 
         verdict = risk.check(
             decision=decision,
@@ -352,6 +428,8 @@ def main():
     logger.info("  Scanner trade threshold: %.0f%%", SCANNER_TRADE_THRESHOLD * 100)
 
     data_fetcher   = AlpacaDataFetcher(config.alpaca)
+    massive_fetcher = MassiveIndicatorFetcher()
+    earnings_cal = EarningsCalendar()
     ai_engine      = AIDecisionEngine(config.anthropic)
     executor       = AlpacaExecutor(config.alpaca)
     risk           = RiskManager(config.risk)
@@ -375,13 +453,15 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown)
 
     while running:
-        try:
-            run_loop(data_fetcher, None, ai_engine, executor, risk, store, research_store)
-        except Exception as e:
-            logger.exception("Unhandled exception in agent loop: %s", e)
+        if is_market_open():
+            try:
+                run_loop(data_fetcher, None, ai_engine, executor, risk, store, research_store, massive_fetcher, earnings_cal)
+            except Exception as e:
+                logger.exception("Unhandled exception in agent loop: %s", e)
+        else:
+            logger.info("Market closed -- agent paused (NYSE open 15:30-22:00 Copenhagen time weekdays)")
 
         if running:
-            logger.info("Sleeping %ds until next tick...", config.agent.loop_interval_seconds)
             time.sleep(config.agent.loop_interval_seconds)
 
     store.close()

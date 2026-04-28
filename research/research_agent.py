@@ -14,6 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
 from collector import fetch_news, fetch_sec_filings, fetch_reddit
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from data.earnings_calendar import EarningsCalendar
 from analyst import ResearchAnalyst
 from emailer import send_alert
 from storage.research_store import ResearchStore
@@ -42,7 +45,17 @@ SCANNER_MIN_SCORE  = float(os.getenv("SCANNER_MIN_SCORE", "0.50"))
 SCANNER_MAX_HITS   = int(os.getenv("SCANNER_MAX_HITS", "10"))
 
 
-def run_research_cycle(analyst: ResearchAnalyst, store: ResearchStore, scanner: MarketScanner):
+
+def is_market_open() -> bool:
+    """Returns True if NYSE is currently open (Mon-Fri 13:30-20:00 UTC)."""
+    from datetime import datetime, timezone, time as _dtime
+    now = datetime.now(timezone.utc)
+    if now.weekday() >= 5:
+        return False
+    return _dtime(13, 30) <= now.time() <= _dtime(20, 0)
+
+
+def run_research_cycle(analyst: ResearchAnalyst, store: ResearchStore, scanner: MarketScanner, earnings_cal=None):
     logger.info("=== Research cycle starting ===")
 
     # 1. Base watchlist
@@ -52,8 +65,10 @@ def run_research_cycle(analyst: ResearchAnalyst, store: ResearchStore, scanner: 
     # 2. Market scanner — discover new opportunities
     discovered_symbols = []
     scanner_hits = []
-    try:
-        scanner_hits = scanner.scan(max_results=SCANNER_MAX_HITS)
+    binary_catalyst_symbols = []
+    if is_market_open():
+        try:
+            scanner_hits = scanner.scan(max_results=SCANNER_MAX_HITS)
         discovered_symbols = [
             h.symbol for h in scanner_hits
             if h.score >= SCANNER_MIN_SCORE and h.symbol not in base_symbols
@@ -70,9 +85,47 @@ def run_research_cycle(analyst: ResearchAnalyst, store: ResearchStore, scanner: 
     all_symbols = list(dict.fromkeys(base_symbols + discovered_symbols))
     logger.info("Total symbols to research this cycle: %d", len(all_symbols))
 
+    # 2b. Check earnings calendar — log upcoming events
+    if earnings_cal:
+        try:
+            earnings_events = earnings_cal.get_events(all_symbols)
+            pre = [s for s, ev in earnings_events.items() if ev.is_pre_earnings_window]
+            upcoming = [f"{s} ({ev.days_until}d)" for s, ev in earnings_events.items() if ev.days_until <= 7]
+            if pre:
+                logger.warning("PRE-EARNINGS this week: %s", pre)
+            if upcoming:
+                logger.info("Upcoming earnings (<=7 days): %s", upcoming)
+            # Add post-earnings symbols to SEC fetch priority
+            post = [s for s, ev in earnings_events.items() if ev.is_post_earnings]
+            if post:
+                logger.info("POST-EARNINGS reaction symbols: %s", post)
+                for sym in post:
+                    if sym not in discovered_symbols:
+                        discovered_symbols.append(sym)
+        except Exception as e:
+            logger.warning("Earnings calendar error in research: %s", e)
+
     # 3. Collect from all sources
-    news_items    = fetch_news(all_symbols, api_key=os.getenv("NEWSAPI_KEY", ""))
-    sec_items     = fetch_sec_filings(all_symbols)
+    # News first — Benzinga via Massive covers large/mid caps well
+    news_items = fetch_news(
+        all_symbols,
+        api_key=os.getenv("MASSIVE_API_KEY", os.getenv("BENZINGA_API_KEY", "")),
+    )
+
+    # SEC filings — only for symbols with no Benzinga coverage
+    # Always include scanner discoveries regardless of news coverage
+    symbols_with_news = {item.symbol for item in news_items}
+    sec_priority = [
+        s for s in all_symbols
+        if s not in symbols_with_news or s in discovered_symbols
+    ]
+    if sec_priority:
+        logger.info(
+            "SEC filing fetch for %d symbols (no Benzinga coverage or scanner discovery): %s",
+            len(sec_priority), sec_priority[:10],
+        )
+    sec_items = fetch_sec_filings(sec_priority) if sec_priority else []
+
     reddit_items  = fetch_reddit(
         all_symbols,
         client_id=os.getenv("REDDIT_CLIENT_ID", ""),
@@ -82,25 +135,49 @@ def run_research_cycle(analyst: ResearchAnalyst, store: ResearchStore, scanner: 
     # Add scanner hits as synthetic research items
     from collector import ResearchItem
     scanner_items = []
+    binary_catalyst_symbols = []  # Track stocks with >20% moves
+
     for hit in scanner_hits:
         if hit.score >= SCANNER_MIN_SCORE:
-            # Optionally enrich with Yahoo detail
             detail = scanner.get_symbol_detail(hit.symbol) or {}
+
+            # Detect binary catalyst moves (>20% single day)
+            is_binary = abs(hit.change_pct) >= 20
+            if is_binary:
+                binary_catalyst_symbols.append(hit.symbol)
+                catalyst_note = (
+                    f"BINARY CATALYST ALERT: {hit.change_pct:+.1f}% single-day move. "
+                    "This magnitude strongly suggests a fundamental catalyst event "
+                    "(clinical trial data, FDA decision, earnings surprise, M&A, "
+                    "major contract). Technical indicators are unreliable today. "
+                    "Prioritise fundamental research to confirm catalyst. "
+                )
+            else:
+                catalyst_note = ""
+
             summary = (
-                f"{detail.get('company_name', hit.symbol)} ({detail.get('sector','?')} / "
-                f"{detail.get('industry','?')}): {hit.reason}. "
-                f"Price ${hit.price:.2f}, change {hit.change_pct:+.1f}% today. "
+                f"{detail.get('company_name', hit.symbol)} "
+                f"({detail.get('sector','?')} / {detail.get('industry','?')}): "
+                f"{hit.reason}. Price ${hit.price:.2f}, change {hit.change_pct:+.1f}% today. "
+                f"{catalyst_note}"
                 f"{detail.get('description', '')}"
             )
             scanner_items.append(ResearchItem(
                 source="scanner",
                 symbol=hit.symbol,
-                title=f"[SCANNER] {hit.symbol}: {hit.reason}",
-                summary=summary[:500],
+                title=f"[SCANNER{'|CATALYST' if is_binary else ''}] {hit.symbol}: {hit.reason}",
+                summary=summary[:800],
                 url=f"https://finance.yahoo.com/quote/{hit.symbol}",
                 published_at=datetime.now(timezone.utc),
-                raw={"score": hit.score, "change_pct": hit.change_pct},
+                raw={"score": hit.score, "change_pct": hit.change_pct, "binary": is_binary},
             ))
+
+    if binary_catalyst_symbols:
+        logger.info(
+            "BINARY CATALYST STOCKS detected (>20%% move): %s -- "
+            "technical indicators unreliable, prioritising fundamental research",
+            binary_catalyst_symbols,
+        )
 
     all_items = news_items + sec_items + reddit_items + scanner_items
     logger.info(
@@ -123,8 +200,15 @@ def run_research_cycle(analyst: ResearchAnalyst, store: ResearchStore, scanner: 
 
     # 5. Write signals to DB
     for r in reports:
-        # Give scanner-discovered stocks a slightly shorter TTL
-        ttl = 2 if r.symbol in discovered_symbols else 4
+        # Binary catalyst stocks get 6h TTL (longer — catalyst effect persists)
+        # Other scanner discoveries get 2h TTL
+        # Regular watchlist gets 4h TTL
+        if r.symbol in binary_catalyst_symbols:
+            ttl = 6
+        elif r.symbol in discovered_symbols:
+            ttl = 2
+        else:
+            ttl = 4
         logger.info(
             "[%s] %s | conviction=%.0f%% | action=%s | %s",
             r.symbol, r.overall_sentiment, r.conviction * 100,
@@ -168,6 +252,7 @@ def main():
 
     analyst = ResearchAnalyst(config.anthropic)
     store   = ResearchStore()
+    earnings_cal = EarningsCalendar()
     scanner = MarketScanner(
         alpaca_api_key=os.getenv("ALPACA_API_KEY", ""),
         alpaca_secret_key=os.getenv("ALPACA_SECRET_KEY", ""),
@@ -185,13 +270,18 @@ def main():
 
     while running:
         try:
-            run_research_cycle(analyst, store, scanner)
+            run_research_cycle(analyst, store, scanner, earnings_cal)
         except Exception as e:
             logger.exception("Unhandled error in research cycle: %s", e)
 
         if running:
-            logger.info("Sleeping %ds until next cycle...", RESEARCH_INTERVAL)
-            time.sleep(RESEARCH_INTERVAL)
+            if is_market_open():
+                interval = RESEARCH_INTERVAL
+                logger.info("Market open -- next research cycle in %ds", interval)
+            else:
+                interval = 7200  # 2 hours outside market hours
+                logger.info("Market closed -- next research cycle in 2h")
+            time.sleep(interval)
 
     store.close()
     logger.info("Research agent shut down cleanly.")

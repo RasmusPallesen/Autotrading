@@ -42,8 +42,8 @@ class RiskConfig:
     max_position_pct: float = 0.03
     stop_loss_pct: float = 0.05
     take_profit_pct: float = 0.15
-    max_daily_drawdown_pct: float = 0.02
-    max_open_positions: int = 25
+    max_daily_drawdown_pct: float = 0.03
+    max_open_positions: int = 15
 
 
 @dataclass
@@ -88,6 +88,15 @@ class WatchlistConfig:
         "ARRY",   # Array Technologies — solar tracking
     ])
 
+    # ── Biotech & Clinical Stage ──────────────────────────────────────────────────
+    biotech: List[str] = field(default_factory=lambda: [
+        "MANE",   # Veradermics — oral hair loss treatment (Phase 2/3 catalyst)
+        "RXRX",   # Recursion Pharmaceuticals — AI-driven drug discovery
+        "BEAM",   # Beam Therapeutics — base editing gene therapy
+        "CRSP",   # CRISPR Therapeutics — gene editing
+        "NTLA",   # Intellia Therapeutics — in vivo gene editing
+    ])
+
     # ── MedTech — Diabetes Treatment & Monitoring ────────────────────────────────
     medtech_diabetes: List[str] = field(default_factory=lambda: [
         "NVO",    # Novo Nordisk — Ozempic, Wegovy (GLP-1 market leader)
@@ -123,6 +132,8 @@ class WatchlistConfig:
             "ENPH", "FSLR", "NEE",
             # MedTech diabetes
             "NVO", "LLY", "DXCM", "PODD",
+            # Biotech
+            "MANE", "RXRX",
             # General
             "TSLA", "AAPL",
         ]
@@ -132,7 +143,7 @@ class WatchlistConfig:
         """Full universe for research agent monitoring."""
         return list(dict.fromkeys(
             self.ai_chips + self.ai_software + self.green_energy +
-            self.medtech_diabetes + self.general
+            self.medtech_diabetes + self.biotech + self.general
         ))
 
     crypto: List[str] = field(default_factory=lambda: [
@@ -142,7 +153,7 @@ class WatchlistConfig:
 
 @dataclass
 class AgentConfig:
-    loop_interval_seconds: int = 900   # 15 min — cost efficient
+    loop_interval_seconds: int = 300   # 5 min — cost efficient
     indicator_lookback: int = 50
     min_confidence: float = 0.65
     log_level: str = "INFO"
@@ -151,7 +162,9 @@ class AgentConfig:
     # Stocks in these sectors get a confidence boost when signals are mixed
     preferred_sectors: List[str] = field(default_factory=lambda: [
         "AI", "semiconductor", "chip manufacturing", "green energy",
-        "solar", "renewable", "EV charging", "hydrogen"
+        "solar", "renewable", "EV charging", "hydrogen",
+        "biotech", "biopharmaceutical", "clinical stage", "gene therapy",
+        "dermatology", "hair loss", "oncology"
     ])
 
     # Confidence bonus applied to preferred sector stocks (0.0 - 0.10)

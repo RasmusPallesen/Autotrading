@@ -77,11 +77,14 @@ SECTOR_MAP = {
     "NVO": "MEDTECH", "LLY": "MEDTECH", "DXCM": "MEDTECH",
     "ABT": "MEDTECH", "ISRG": "MEDTECH", "PODD": "MEDTECH",
     "TNDM": "MEDTECH", "MDT": "MEDTECH", "INVA": "MEDTECH", "RYTM": "MEDTECH",
+    # Biotech / Clinical Stage
+    "MANE": "BIOTECH", "RXRX": "BIOTECH", "BEAM": "BIOTECH",
+    "CRSP": "BIOTECH", "NTLA": "BIOTECH",
     # General
     "AAPL": "GENERAL", "TSLA": "GENERAL", "COIN": "GENERAL", "MSTR": "GENERAL",
 }
 
-PREFERRED_SECTORS = {"AI_CHIPS", "AI_SOFTWARE", "GREEN_ENERGY", "MEDTECH"}
+PREFERRED_SECTORS = {"AI_CHIPS", "AI_SOFTWARE", "GREEN_ENERGY", "MEDTECH", "BIOTECH"}
 
 
 @dataclass
@@ -121,8 +124,10 @@ class AIDecisionEngine:
         existing_position: Optional[dict] = None,
         sector_bias_boost: float = 0.05,
         research_signal: Optional[dict] = None,
+        massive_indicator=None,
+        earnings_event=None,
     ) -> TradeDecision:
-        user_prompt = self._build_prompt(snapshot, portfolio_context, existing_position, research_signal)
+        user_prompt = self._build_prompt(snapshot, portfolio_context, existing_position, research_signal, massive_indicator, earnings_event)
 
         try:
             response = self.client.messages.create(
@@ -138,21 +143,6 @@ class AIDecisionEngine:
             if decision.sector in PREFERRED_SECTORS and decision.action != "HOLD":
                 original = decision.confidence
                 decision.confidence = min(decision.confidence + sector_bias_boost, 0.95)
-                # Additional boost if research agent has high conviction on same direction
-            if research_signal and decision.action != "HOLD":
-                research_conviction = float(research_signal.get("conviction", 0))
-                research_sentiment = research_signal.get("sentiment", "NEUTRAL")
-                sentiment_matches = (
-                    (decision.action == "BUY" and research_sentiment == "BULLISH") or
-                    (decision.action == "SELL" and research_sentiment == "BEARISH")
-                )
-                if sentiment_matches and research_conviction >= 0.65:
-                    boost = (research_conviction - 0.65) * 0.5
-                    decision.confidence = min(decision.confidence + boost, 0.95)
-                    logger.debug(
-                        "[%s] Research boost +%.2f (research=%.0f%% %s)",
-                        snapshot.symbol, boost, research_conviction * 100, research_sentiment,
-                )
                 if decision.confidence != original:
                     logger.debug(
                         "[%s] Sector bias applied: %.2f -> %.2f",
@@ -175,12 +165,16 @@ class AIDecisionEngine:
         positions: dict,
         sector_bias_boost: float = 0.05,
         research_signals: dict = None,
+        massive_indicators: dict = None,
+        earnings_events: dict = None,
     ) -> List[TradeDecision]:
         decisions = []
         for snapshot in snapshots:
             existing = positions.get(snapshot.symbol)
             research_signal = (research_signals or {}).get(snapshot.symbol)
-            decision = self.decide(snapshot, portfolio_context, existing, sector_bias_boost, research_signal)
+            massive_ind = (massive_indicators or {}).get(snapshot.symbol)
+            earnings_event = (earnings_events or {}).get(snapshot.symbol)
+            decision = self.decide(snapshot, portfolio_context, existing, sector_bias_boost, research_signal, massive_ind, earnings_event)
             sector_tag = f" [{decision.sector}]" if decision.sector != "GENERAL" else ""
             logger.info(
                 "[%s]%s %s (conf=%.2f, urgency=%s): %s",
@@ -190,7 +184,7 @@ class AIDecisionEngine:
             decisions.append(decision)
         return decisions
 
-    def _build_prompt(self, snapshot, portfolio_context, existing_position, research_signal=None):
+    def _build_prompt(self, snapshot, portfolio_context, existing_position, research_signal=None, massive_indicator=None, earnings_event=None):
         sector = SECTOR_MAP.get(snapshot.symbol, "GENERAL")  # Unknown scanner discoveries default to GENERAL
         sector_note = (
             f"\nSector: {sector} — this is a PREFERRED sector, apply confidence boost if signals support it."
@@ -219,6 +213,31 @@ class AIDecisionEngine:
             ]
         else:
             lines.append("\nNo existing position.")
+
+        # Inject Massive end-of-day indicators if available
+        if massive_indicator:
+            lines += [
+                "",
+                "=== MASSIVE.COM INDICATORS (end-of-day, exchange-grade) ===",
+                massive_indicator.to_summary(),
+            ]
+            # Flag if Massive disagrees significantly with local calcs
+            if massive_indicator.conflicts_with_local(
+                getattr(snapshot, "rsi_14", None),
+                getattr(snapshot, "ema_9", None),
+            ):
+                lines.append(
+                    "WARNING: Massive indicators diverge significantly from local calculations. "
+                    "Weight end-of-day Massive data carefully against intraday local data."
+                )
+
+        # Inject earnings context
+        if earnings_event:
+            lines += [
+                "",
+                "=== EARNINGS CALENDAR ===",
+                earnings_event.to_prompt_text(),
+            ]
 
         lines.append("\nProvide your trade decision as JSON only.")
         return "\n".join(lines)
