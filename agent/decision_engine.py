@@ -80,11 +80,15 @@ SECTOR_MAP = {
     # Biotech / Clinical Stage
     "MANE": "BIOTECH", "RXRX": "BIOTECH", "BEAM": "BIOTECH",
     "CRSP": "BIOTECH", "NTLA": "BIOTECH",
+    # Drone & Defence
+    "KTOS": "DRONE", "AVAV": "DRONE", "RCAT": "DRONE",
+    "NOC": "DRONE", "LMT": "DRONE", "RTX": "DRONE",
+    "AXON": "DRONE", "UMAC": "DRONE",
     # General
     "AAPL": "GENERAL", "TSLA": "GENERAL", "COIN": "GENERAL", "MSTR": "GENERAL",
 }
 
-PREFERRED_SECTORS = {"AI_CHIPS", "AI_SOFTWARE", "GREEN_ENERGY", "MEDTECH", "BIOTECH"}
+PREFERRED_SECTORS = {"AI_CHIPS", "AI_SOFTWARE", "GREEN_ENERGY", "MEDTECH", "BIOTECH", "DRONE"}
 
 
 @dataclass

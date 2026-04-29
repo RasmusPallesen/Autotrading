@@ -134,6 +134,8 @@ class WatchlistConfig:
             "NVO", "LLY", "DXCM", "PODD",
             # Biotech
             "MANE", "RXRX",
+            # Drone & Defence
+            "KTOS", "AVAV",
             # General
             "TSLA", "AAPL",
         ]
@@ -143,7 +145,7 @@ class WatchlistConfig:
         """Full universe for research agent monitoring."""
         return list(dict.fromkeys(
             self.ai_chips + self.ai_software + self.green_energy +
-            self.medtech_diabetes + self.biotech + self.general
+            self.medtech_diabetes + self.biotech + self.drone_defence + self.general
         ))
 
     crypto: List[str] = field(default_factory=lambda: [
@@ -164,7 +166,9 @@ class AgentConfig:
         "AI", "semiconductor", "chip manufacturing", "green energy",
         "solar", "renewable", "EV charging", "hydrogen",
         "biotech", "biopharmaceutical", "clinical stage", "gene therapy",
-        "dermatology", "hair loss", "oncology"
+        "dermatology", "hair loss", "oncology",
+        "drone", "autonomous", "defence", "defense", "military", "loitering munition",
+        "counter-drone", "unmanned", "UAV", "UAS", "aerospace"
     ])
 
     # Confidence bonus applied to preferred sector stocks (0.0 - 0.10)
