@@ -1,4 +1,9 @@
 """
+Patch script — fixes TradeStore to read DATABASE_URL at runtime not import time.
+Run from project root: python fix_trade_store.py
+"""
+
+NEW_TRADE_STORE = '''"""
 Storage layer: PostgreSQL-backed trade log with SQLite fallback for local dev.
 Set DATABASE_URL env var to use PostgreSQL, otherwise falls back to SQLite.
 """
@@ -182,3 +187,10 @@ class TradeStore:
 
     def close(self):
         self.conn.close()
+'''
+
+with open("storage\\trade_store.py", "w", encoding="utf-8") as f:
+    f.write(NEW_TRADE_STORE)
+
+print("SUCCESS: trade_store.py rewritten")
+print("Restart start_agent.bat — TradeStore will now connect to PostgreSQL")
