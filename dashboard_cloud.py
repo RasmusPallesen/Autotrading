@@ -306,6 +306,7 @@ st.divider()
 
 # ── Decision KPIs ──────────────────────────────────────────────────────────────
 decisions   = load_decisions()
+st.sidebar.write(f"Decisions loaded: {len(decisions)}")
 executions  = load_executions()
 
 st.subheader("Agent Decisions (last 200)")
