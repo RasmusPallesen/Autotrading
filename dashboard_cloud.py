@@ -56,13 +56,27 @@ ALPACA_BASE     = "https://paper-api.alpaca.markets" if ALPACA_PAPER else "https
 
 # ── DB connection ──────────────────────────────────────────────────────────────
 @st.cache_resource
+@st.cache_resource
 def get_conn():
     if not DATABASE_URL:
         return None, None
     try:
         import psycopg2
+        from urllib.parse import urlparse, unquote
+
         url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-        return "postgres", psycopg2.connect(url)
+        parsed = urlparse(url)
+
+        conn = psycopg2.connect(
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            dbname=parsed.path.lstrip("/"),
+            user=parsed.username,
+            password=unquote(parsed.password or ""),
+            sslmode="require",
+            connect_timeout=10,
+        )
+        return "postgres", conn
     except Exception as e:
         st.error(f"DB connection failed: {e}")
         return None, None
