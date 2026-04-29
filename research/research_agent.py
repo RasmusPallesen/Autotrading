@@ -20,6 +20,7 @@ from storage.research_store import ResearchStore
 from data.market_scanner import MarketScanner
 from data.earnings_calendar import EarningsCalendar
 from data.insider_monitor import InsiderMonitor
+from data.iv_monitor import IVMonitor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,7 +50,7 @@ def is_market_open() -> bool:
     return _dtime(13, 30) <= now.time() <= _dtime(20, 0)
 
 
-def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None):
+def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None):
     logger.info("=== Research cycle starting ===")
 
     # 1. Base watchlist
@@ -133,6 +134,55 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
     all_symbols = list(dict.fromkeys(base_symbols + discovered_symbols))
     logger.info("Total symbols to research this cycle: %d", len(all_symbols))
 
+    # 2b. IV spike monitor — runs after market close for end-of-day data
+    iv_items = []
+    if iv_monitor and not is_market_open():
+        try:
+            from collector import ResearchItem
+            # Get earnings symbols to distinguish explained vs unexplained IV
+            earnings_soon = []
+            if earnings_cal:
+                try:
+                    ev = earnings_cal.get_events(all_symbols)
+                    earnings_soon = [s for s, e in ev.items() if e.days_until <= 7]
+                except Exception:
+                    pass
+
+            iv_spikes = iv_monitor.scan(all_symbols, earnings_symbols=earnings_soon)
+
+            for snap in iv_spikes:
+                has_earnings = snap.symbol in earnings_soon
+                summary = snap.to_research_summary(has_earnings)
+                iv_items.append(ResearchItem(
+                    source="iv_spike",
+                    symbol=snap.symbol,
+                    title=(
+                        f"[IV SPIKE{'|EARNINGS' if has_earnings else '|UNUSUAL'}] "
+                        f"{snap.symbol}: IV rank {snap.iv_rank*100:.0f}% "
+                        f"({snap.signal_strength})"
+                    ),
+                    summary=summary,
+                    url=f"https://finance.yahoo.com/quote/{snap.symbol}/options",
+                    published_at=datetime.now(timezone.utc),
+                    raw={
+                        "iv_rank": snap.iv_rank,
+                        "current_iv": snap.current_iv,
+                        "put_call_ratio": snap.put_call_ratio,
+                        "signal_type": snap.signal_type,
+                        "has_earnings": has_earnings,
+                    },
+                ))
+                if not has_earnings:
+                    logger.warning(
+                        "UNEXPLAINED IV SPIKE [%s]: rank=%.0f%% type=%s -- possible catalyst ahead",
+                        snap.symbol, snap.iv_rank * 100, snap.signal_type,
+                    )
+        except Exception as e:
+            logger.warning("IV monitor error: %s", e)
+    elif is_market_open():
+        iv_items = []
+        logger.debug("IV monitor skipped -- runs after market close only")
+
     # 2c. Insider trading monitor
     insider_items = []
     if insider_monitor:
@@ -195,11 +245,11 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
     )
 
-    all_items = news_items + sec_items + reddit_items + scanner_items + insider_items
+    all_items = news_items + sec_items + reddit_items + scanner_items + insider_items + iv_items
     logger.info(
-        "Collected %d items -- news=%d, SEC=%d, Reddit=%d, Scanner=%d, Insider=%d",
+        "Collected %d items -- news=%d, SEC=%d, Reddit=%d, Scanner=%d, Insider=%d, IV=%d",
         len(all_items), len(news_items), len(sec_items),
-        len(reddit_items), len(scanner_items), len(insider_items),
+        len(reddit_items), len(scanner_items), len(insider_items), len(iv_items),
     )
 
     if not all_items:
@@ -261,6 +311,7 @@ def main():
     store        = ResearchStore()
     earnings_cal = EarningsCalendar()
     insider_monitor = InsiderMonitor()
+    iv_monitor = IVMonitor()
     scanner      = MarketScanner(
         alpaca_api_key=os.getenv("ALPACA_API_KEY", ""),
         alpaca_secret_key=os.getenv("ALPACA_SECRET_KEY", ""),
@@ -279,7 +330,7 @@ def main():
 
     while running:
         try:
-            run_research_cycle(analyst, store, scanner, earnings_cal, insider_monitor)
+            run_research_cycle(analyst, store, scanner, earnings_cal, insider_monitor, iv_monitor)
         except Exception as e:
             logger.exception("Unhandled error in research cycle: %s", e)
 
