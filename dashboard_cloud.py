@@ -307,6 +307,17 @@ st.divider()
 # ── Decision KPIs ──────────────────────────────────────────────────────────────
 decisions   = load_decisions()
 st.sidebar.write(f"Decisions loaded: {len(decisions)}")
+try:
+    backend, conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM decisions")
+        count = cur.fetchone()[0]
+        st.sidebar.write(f"Direct count: {count}")
+        cur.execute("SELECT id, symbol, action FROM decisions LIMIT 1")
+        row = cur.fetchone()
+        st.sidebar.write(f"First row: {row}")
+except Exception as e:
+    st.sidebar.error(f"Direct query error: {e}")
 executions  = load_executions()
 
 st.subheader("Agent Decisions (last 200)")
