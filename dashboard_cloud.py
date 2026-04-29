@@ -87,7 +87,11 @@ def query(sql: str, params=()) -> pd.DataFrame:
     if conn is None:
         return pd.DataFrame()
     try:
-        return pd.read_sql(sql.replace("?", "%s"), conn, params=params)
+        with conn.cursor() as cur:
+            cur.execute(sql.replace("?", "%s"), params or None)
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+            return pd.DataFrame(rows, columns=cols)
     except Exception as e:
         st.error(f"Query error: {e}")
         return pd.DataFrame()
