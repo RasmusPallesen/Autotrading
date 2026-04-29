@@ -19,6 +19,7 @@ from emailer import send_alert
 from storage.research_store import ResearchStore
 from data.market_scanner import MarketScanner
 from data.earnings_calendar import EarningsCalendar
+from data.insider_monitor import InsiderMonitor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +49,7 @@ def is_market_open() -> bool:
     return _dtime(13, 30) <= now.time() <= _dtime(20, 0)
 
 
-def run_research_cycle(analyst, store, scanner, earnings_cal=None):
+def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None):
     logger.info("=== Research cycle starting ===")
 
     # 1. Base watchlist
@@ -132,6 +133,49 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None):
     all_symbols = list(dict.fromkeys(base_symbols + discovered_symbols))
     logger.info("Total symbols to research this cycle: %d", len(all_symbols))
 
+    # 2c. Insider trading monitor
+    insider_items = []
+    if insider_monitor:
+        try:
+            from collector import ResearchItem
+            significant_buys = insider_monitor.get_significant_buys(
+                all_symbols, days_back=14
+            )
+            if significant_buys:
+                logger.info(
+                    "Insider Monitor: %d significant buys found",
+                    len(significant_buys),
+                )
+            for txn in significant_buys:
+                logger.info(
+                    "INSIDER BUY: %s -- %s (%s) bought $%,.0f worth",
+                    txn.symbol, txn.insider_name,
+                    txn.insider_title, txn.total_value,
+                )
+                insider_items.append(ResearchItem(
+                    source="insider",
+                    symbol=txn.symbol,
+                    title=(
+                        f"[INSIDER BUY] {txn.insider_name} ({txn.insider_title}) "
+                        f"bought ${txn.total_value:,.0f} of {txn.symbol}"
+                    ),
+                    summary=txn.to_research_summary(),
+                    url=txn.form_url,
+                    published_at=datetime.combine(
+                        txn.filing_date,
+                        datetime.min.time(),
+                        tzinfo=timezone.utc,
+                    ),
+                    raw={
+                        "shares": txn.shares,
+                        "price": txn.price_per_share,
+                        "value": txn.total_value,
+                        "signal_strength": txn.signal_strength,
+                    },
+                ))
+        except Exception as e:
+            logger.warning("Insider monitor error: %s", e)
+
     # 3. Collect from all sources
     news_items = fetch_news(
         all_symbols,
@@ -151,10 +195,11 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None):
         client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
     )
 
-    all_items = news_items + sec_items + reddit_items + scanner_items
+    all_items = news_items + sec_items + reddit_items + scanner_items + insider_items
     logger.info(
-        "Collected %d items -- news=%d, SEC=%d, Reddit=%d, Scanner=%d",
-        len(all_items), len(news_items), len(sec_items), len(reddit_items), len(scanner_items),
+        "Collected %d items -- news=%d, SEC=%d, Reddit=%d, Scanner=%d, Insider=%d",
+        len(all_items), len(news_items), len(sec_items),
+        len(reddit_items), len(scanner_items), len(insider_items),
     )
 
     if not all_items:
@@ -215,6 +260,7 @@ def main():
     analyst      = ResearchAnalyst(config.anthropic)
     store        = ResearchStore()
     earnings_cal = EarningsCalendar()
+    insider_monitor = InsiderMonitor()
     scanner      = MarketScanner(
         alpaca_api_key=os.getenv("ALPACA_API_KEY", ""),
         alpaca_secret_key=os.getenv("ALPACA_SECRET_KEY", ""),
@@ -233,7 +279,7 @@ def main():
 
     while running:
         try:
-            run_research_cycle(analyst, store, scanner, earnings_cal)
+            run_research_cycle(analyst, store, scanner, earnings_cal, insider_monitor)
         except Exception as e:
             logger.exception("Unhandled error in research cycle: %s", e)
 
