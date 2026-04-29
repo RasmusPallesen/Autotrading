@@ -309,6 +309,14 @@ st.divider()
 # ── Decision KPIs ──────────────────────────────────────────────────────────────
 decisions   = load_decisions()
 st.sidebar.write(f"Decisions loaded: {len(decisions)}")
+# Debug connection
+try:
+    backend, conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_user, current_database(), current_schema()")
+        st.sidebar.write("Connection:", cur.fetchone())
+except Exception as e:
+    st.sidebar.error(f"Debug error: {e}")
 try:
     backend, conn = get_conn()
     with conn.cursor() as cur:
