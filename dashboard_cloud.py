@@ -55,8 +55,7 @@ ALPACA_BASE     = "https://paper-api.alpaca.markets" if ALPACA_PAPER else "https
 
 
 # ── DB connection ──────────────────────────────────────────────────────────────
-@st.cache_resource
-@st.cache_resource
+@st.cache_resource(ttl=60)
 def get_conn():
     if not DATABASE_URL:
         return None, None
@@ -214,6 +213,9 @@ backend, conn = get_conn()
 refresh = st.sidebar.selectbox("Auto-refresh", [10, 30, 60, 120], index=1)
 st.sidebar.caption(f"DB: {'connected' if conn else 'disconnected'}")
 st.sidebar.caption(f"Paper: {ALPACA_PAPER}")
+if st.sidebar.button("Reconnect DB"):
+    st.cache_resource.clear()
+    st.rerun()
 
 st.title("Trading Agent")
 
