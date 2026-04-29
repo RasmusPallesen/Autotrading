@@ -36,8 +36,18 @@ class ResearchStore:
 
     def _setup_postgres(self):
         import psycopg2
+        from urllib.parse import urlparse, unquote
         url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-        self.conn = psycopg2.connect(url)
+        parsed = urlparse(url)
+        self.conn = psycopg2.connect(
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            dbname=parsed.path.lstrip("/"),
+            user=parsed.username,
+            password=unquote(parsed.password or ""),
+            sslmode="require",
+            connect_timeout=10,
+        )
         self.conn.autocommit = True
         self._backend = "postgres"
         logger.info("ResearchStore connected to PostgreSQL")
