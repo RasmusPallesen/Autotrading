@@ -43,7 +43,7 @@ class RiskConfig:
     stop_loss_pct: float = 0.05
     take_profit_pct: float = 0.15
     max_daily_drawdown_pct: float = 0.02
-    max_open_positions: int = 10
+    max_open_positions: int = 15
 
 
 @dataclass
