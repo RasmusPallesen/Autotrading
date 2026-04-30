@@ -39,93 +39,68 @@ class AnthropicConfig:
 
 @dataclass
 class RiskConfig:
-    max_position_pct: float = 0.03
+    max_position_pct: float = 0.02
     stop_loss_pct: float = 0.05
     take_profit_pct: float = 0.15
-    max_daily_drawdown_pct: float = 0.03
-    max_open_positions: int = 15
+    max_daily_drawdown_pct: float = 0.02
+    max_open_positions: int = 10
 
 
 @dataclass
 class WatchlistConfig:
+
     # ── AI & Chip Manufacturing ────────────────────────────────────────────────
     ai_chips: List[str] = field(default_factory=lambda: [
-        "NVDA",   # Nvidia — dominant AI GPU manufacturer
-        "AMD",    # AMD — GPUs, CPUs, AI accelerators
-        "INTC",   # Intel — chips, AI accelerators (Gaudi)
-        "AVGO",   # Broadcom — custom AI chips (Google TPU)
-        "QCOM",   # Qualcomm — edge AI chips
-        "ARM",    # ARM Holdings — chip architecture (AI inference)
-        "ASML",   # ASML — EUV lithography, enables all advanced chips
-        "TSM",    # TSMC — world's largest chip foundry
-        "MRVL",   # Marvell — data centre AI chips
-        "AMAT",   # Applied Materials — chip manufacturing equipment
+        "NVDA", "AMD", "INTC", "AVGO", "QCOM",
+        "ARM", "ASML", "TSM", "MRVL", "AMAT",
     ])
 
-    # ── Pure AI / Software ─────────────────────────────────────────────────────
+    # ── AI Software & Platforms ────────────────────────────────────────────────
     ai_software: List[str] = field(default_factory=lambda: [
-        "MSFT",   # Microsoft — OpenAI partner, Azure AI
-        "GOOGL",  # Alphabet — Gemini, TPUs, DeepMind
-        "META",   # Meta — Llama, AI infrastructure
-        "AMZN",   # Amazon — AWS AI, Bedrock, Trainium chips
-        "PLTR",   # Palantir — AI/data analytics platform
-        "AI",     # C3.ai — enterprise AI software
-        "SOUN",   # SoundHound — voice AI
-        "BBAI",   # BigBear.ai — AI analytics
+        "MSFT", "GOOGL", "META", "AMZN",
+        "PLTR", "AI", "SOUN", "BBAI",
     ])
 
-    # ── Green Energy Tech ──────────────────────────────────────────────────────
+    # ── Green Energy Technology ────────────────────────────────────────────────
     green_energy: List[str] = field(default_factory=lambda: [
-        "ENPH",   # Enphase Energy — solar microinverters
-        "SEDG",   # SolarEdge — solar inverters
-        "FSLR",   # First Solar — thin-film solar panels
-        "NEE",    # NextEra Energy — largest renewable utility
-        "PLUG",   # Plug Power — hydrogen fuel cells
-        "BE",     # Bloom Energy — solid oxide fuel cells
-        "CHPT",   # ChargePoint — EV charging network
-        "BLNK",   # Blink Charging — EV charging
-        "RUN",    # Sunrun — residential solar
-        "ARRY",   # Array Technologies — solar tracking
+        "ENPH", "SEDG", "FSLR", "NEE", "PLUG",
+        "BE", "CHPT", "BLNK", "RUN", "ARRY",
     ])
 
-    # ── Biotech & Clinical Stage ──────────────────────────────────────────────────
-    biotech: List[str] = field(default_factory=lambda: [
-        "MANE",   # Veradermics — oral hair loss treatment (Phase 2/3 catalyst)
-        "RXRX",   # Recursion Pharmaceuticals — AI-driven drug discovery
-        "BEAM",   # Beam Therapeutics — base editing gene therapy
-        "CRSP",   # CRISPR Therapeutics — gene editing
-        "NTLA",   # Intellia Therapeutics — in vivo gene editing
-    ])
-
-    # ── MedTech — Diabetes Treatment & Monitoring ────────────────────────────────
+    # ── MedTech — Diabetes Treatment & Monitoring ──────────────────────────────
     medtech_diabetes: List[str] = field(default_factory=lambda: [
-        "NVO",    # Novo Nordisk — Ozempic, Wegovy (GLP-1 market leader)
-        "LLY",    # Eli Lilly — Mounjaro, Zepbound (GLP-1 challenger)
-        "DXCM",   # Dexcom — continuous glucose monitors (CGM)
-        "ABT",    # Abbott Labs — FreeStyle Libre CGM
-        "ISRG",   # Intuitive Surgical — robotic surgery (diabetic complications)
-        "PODD",   # Insulet — OmniPod insulin pump
-        "TNDM",   # Tandem Diabetes — t:slim insulin pump
-        "MDT",    # Medtronic — insulin pumps, CGM
-        "INVA",   # Innoviva — specialty pharma / respiratory
-        "RYTM",   # Rhythm Pharmaceuticals — rare obesity/diabetes disorders
+        "NVO", "LLY", "DXCM", "ABT", "ISRG",
+        "PODD", "TNDM", "MDT", "INVA", "RYTM",
     ])
 
-    # ── Legacy watchlist (broad market / crypto proxy) ─────────────────────────
+    # ── Biotech & Clinical Stage ───────────────────────────────────────────────
+    biotech: List[str] = field(default_factory=lambda: [
+        "MANE", "RXRX", "BEAM", "CRSP", "NTLA",
+    ])
+
+    # ── Drone & Defence Technology ─────────────────────────────────────────────
+    drone_defence: List[str] = field(default_factory=lambda: [
+        "KTOS",   # Kratos Defence — autonomous combat drones, AI targeting
+        "AVAV",   # AeroVironment — Switchblade loitering munition
+        "RCAT",   # Red Cat Holdings — Teal drones, US Army standard
+        "NOC",    # Northrop Grumman — Global Hawk surveillance drones
+        "LMT",    # Lockheed Martin — F-35, missile defence
+        "RTX",    # RTX/Raytheon — Coyote counter-drone, loitering munitions
+        "AXON",   # Axon Enterprise — drone-mounted systems
+        "UMAC",   # Unusual Machines — US-made drones + counter-drone
+    ])
+
+    # ── General (broad market / crypto proxy) ──────────────────────────────────
     general: List[str] = field(default_factory=lambda: [
-        "AAPL",   # Apple
-        "TSLA",   # Tesla — EV + AI (FSD, Dojo)
-        "COIN",   # Coinbase
-        "MSTR",   # MicroStrategy — Bitcoin proxy
+        "AAPL", "TSLA", "COIN", "MSTR",
     ])
 
-    # ── Active trading list (subset used each cycle) ───────────────────────────
-    # Agent trades these — keep to 15 max for cost and focus
+    # ── Active trading list (evaluated every tick) ─────────────────────────────
     @property
     def stocks(self) -> List[str]:
         return [
-            # Core AI/chips (highest conviction sector)
-            "NVDA", "AMD", "ASML", "TSM", "AVGO",
+            # Core AI/chips
+            "NVDA", "AMD", "ASML", "TSM", "AVGO", "INTC",
             # AI software
             "MSFT", "GOOGL", "PLTR",
             # Green energy
@@ -140,45 +115,43 @@ class WatchlistConfig:
             "TSLA", "AAPL",
         ]
 
+    # ── Full research universe (all symbols monitored) ─────────────────────────
     @property
     def all_symbols(self) -> List[str]:
-        """Full universe for research agent monitoring."""
         return list(dict.fromkeys(
             self.ai_chips + self.ai_software + self.green_energy +
-            self.medtech_diabetes + self.biotech + self.drone_defence + self.general
+            self.medtech_diabetes + self.biotech + self.drone_defence +
+            self.general
         ))
 
     crypto: List[str] = field(default_factory=lambda: [
-        "BTC-USD", "ETH-USD", "SOL-USD"
+        "BTC-USD", "ETH-USD", "SOL-USD",
     ])
 
 
 @dataclass
 class AgentConfig:
-    loop_interval_seconds: int = 300   # 5 min — cost efficient
+    loop_interval_seconds: int = 300
     indicator_lookback: int = 50
     min_confidence: float = 0.65
     log_level: str = "INFO"
 
-    # Sector bias injected into the AI prompt
-    # Stocks in these sectors get a confidence boost when signals are mixed
     preferred_sectors: List[str] = field(default_factory=lambda: [
         "AI", "semiconductor", "chip manufacturing", "green energy",
         "solar", "renewable", "EV charging", "hydrogen",
         "biotech", "biopharmaceutical", "clinical stage", "gene therapy",
         "dermatology", "hair loss", "oncology",
-        "drone", "autonomous", "defence", "defense", "military", "loitering munition",
-        "counter-drone", "unmanned", "UAV", "UAS", "aerospace"
+        "drone", "autonomous", "defence", "defense", "military",
+        "loitering munition", "counter-drone", "unmanned", "UAV", "UAS",
     ])
 
-    # Confidence bonus applied to preferred sector stocks (0.0 - 0.10)
     sector_bias_boost: float = 0.05
 
 
 # Singletons
-alpaca = AlpacaConfig()
+alpaca   = AlpacaConfig()
 coinbase = CoinbaseConfig()
 anthropic = AnthropicConfig()
-risk = RiskConfig()
+risk     = RiskConfig()
 watchlist = WatchlistConfig()
-agent = AgentConfig()
+agent    = AgentConfig()
