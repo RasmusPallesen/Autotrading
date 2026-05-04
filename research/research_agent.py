@@ -1,14 +1,23 @@
 """
 Research agent main loop.
 Collects data, scans market, analyses, writes signals to DB, sends email alerts.
+
+Caching added for all external data sources:
+- Earnings calendar:    6h TTL in-memory  (dates change weekly, not per-cycle)
+- Insider monitor:      4h TTL in-memory  (SEC Form 4s filed within 2 business days)
+- IV monitor:           daily TTL         (markets closed overnight, data static)
+- Scanner symbol detail: session cache    (sector/description never changes)
+- Motley Fool URLs:     24h TTL on disk   (avoids re-fetching same articles)
+- Claude analysis:      4h TTL on disk    (handled in analyst.py)
 """
 
+import json
 import logging
 import os
 import signal
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -21,6 +30,8 @@ from data.market_scanner import MarketScanner
 from data.earnings_calendar import EarningsCalendar
 from data.insider_monitor import InsiderMonitor
 from data.iv_monitor import IVMonitor
+from data.motley_fool_fetcher import fetch_motley_fool
+from data.clinical_catalyst_calendar import ClinicalCatalystCalendar
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,10 +46,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("research_agent")
 
-RESEARCH_INTERVAL   = int(os.getenv("RESEARCH_INTERVAL_SECONDS", "900"))
+RESEARCH_INTERVAL    = int(os.getenv("RESEARCH_INTERVAL_SECONDS", "900"))
 CONVICTION_THRESHOLD = float(os.getenv("CONVICTION_THRESHOLD", "0.70"))
-SCANNER_MIN_SCORE   = float(os.getenv("SCANNER_MIN_SCORE", "0.50"))
-SCANNER_MAX_HITS    = int(os.getenv("SCANNER_MAX_HITS", "10"))
+SCANNER_MIN_SCORE    = float(os.getenv("SCANNER_MIN_SCORE", "0.50"))
+SCANNER_MAX_HITS     = int(os.getenv("SCANNER_MAX_HITS", "10"))
+
+EARNINGS_CACHE_TTL_HOURS = int(os.getenv("EARNINGS_CACHE_TTL_HOURS", "6"))
+INSIDER_CACHE_TTL_HOURS  = int(os.getenv("INSIDER_CACHE_TTL_HOURS", "4"))
 
 
 def is_market_open() -> bool:
@@ -50,14 +64,192 @@ def is_market_open() -> bool:
     return _dtime(13, 30) <= now.time() <= _dtime(20, 0)
 
 
-def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None):
+# ── Earnings calendar cache ────────────────────────────────────────────────────
+
+_earnings_cache: dict = {}
+_earnings_cache_filled_at: datetime | None = None
+
+
+def _get_earnings_events(earnings_cal, symbols: list) -> dict:
+    """Return earnings events, refreshing at most once every 6 hours."""
+    global _earnings_cache, _earnings_cache_filled_at
+
+    now = datetime.now(timezone.utc)
+    cache_age_h = (
+        (now - _earnings_cache_filled_at).total_seconds() / 3600
+        if _earnings_cache_filled_at else float("inf")
+    )
+
+    if _earnings_cache and cache_age_h < EARNINGS_CACHE_TTL_HOURS:
+        logger.debug("Earnings cache HIT (age=%.1fh)", cache_age_h)
+        return {s: _earnings_cache[s] for s in symbols if s in _earnings_cache}
+
+    logger.info("Earnings cache MISS (age=%.1fh) -- fetching", cache_age_h)
+    try:
+        events = earnings_cal.get_events(symbols)
+        _earnings_cache = events
+        _earnings_cache_filled_at = now
+        logger.info("Earnings cache refreshed: %d events", len(events))
+        return events
+    except Exception as e:
+        logger.warning("Earnings calendar fetch error: %s", e)
+        if _earnings_cache:
+            logger.info("Returning stale earnings cache after fetch error")
+            return {s: _earnings_cache[s] for s in symbols if s in _earnings_cache}
+        return {}
+
+
+# ── Insider monitor cache ──────────────────────────────────────────────────────
+
+_insider_cache: list = []
+_insider_cache_filled_at: datetime | None = None
+_insider_cache_symbols: list = []
+
+
+def _get_insider_buys(insider_monitor, symbols: list) -> list:
+    """Return significant insider buys, refreshing at most once every 4 hours."""
+    global _insider_cache, _insider_cache_filled_at, _insider_cache_symbols
+
+    now = datetime.now(timezone.utc)
+    cache_age_h = (
+        (now - _insider_cache_filled_at).total_seconds() / 3600
+        if _insider_cache_filled_at else float("inf")
+    )
+    symbols_unchanged = set(symbols) == set(_insider_cache_symbols)
+
+    if _insider_cache_filled_at and cache_age_h < INSIDER_CACHE_TTL_HOURS and symbols_unchanged:
+        logger.debug("Insider cache HIT (age=%.1fh, %d txns)", cache_age_h, len(_insider_cache))
+        return _insider_cache
+
+    logger.info("Insider cache MISS (age=%.1fh) -- fetching from SEC EDGAR", cache_age_h)
+    try:
+        buys = insider_monitor.get_significant_buys(symbols, days_back=14)
+        _insider_cache = buys
+        _insider_cache_filled_at = now
+        _insider_cache_symbols = list(symbols)
+        logger.info("Insider cache refreshed: %d significant buys", len(buys))
+        return buys
+    except Exception as e:
+        logger.warning("Insider monitor fetch error: %s", e)
+        if _insider_cache:
+            logger.info("Returning stale insider cache after fetch error")
+        return _insider_cache
+
+
+# ── IV monitor cache ───────────────────────────────────────────────────────────
+
+_iv_cache: list = []
+_iv_cache_date: str | None = None
+
+
+def _get_iv_spikes(iv_monitor, symbols: list, earnings_soon: list) -> list:
+    """
+    Return IV spikes, cached for the full calendar day.
+    Overnight re-runs reuse the same data since markets are closed.
+    """
+    global _iv_cache, _iv_cache_date
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    if _iv_cache and _iv_cache_date == today:
+        logger.debug("IV cache HIT (date=%s, %d spikes)", today, len(_iv_cache))
+        return _iv_cache
+
+    logger.info("IV cache MISS (date=%s) -- scanning options chains", today)
+    try:
+        spikes = iv_monitor.scan(symbols, earnings_symbols=earnings_soon)
+        _iv_cache = spikes
+        _iv_cache_date = today
+        logger.info("IV cache refreshed: %d spikes found", len(spikes))
+        return spikes
+    except Exception as e:
+        logger.warning("IV monitor scan error: %s", e)
+        return _iv_cache
+
+
+# ── Scanner symbol detail cache ────────────────────────────────────────────────
+
+_symbol_detail_cache: dict = {}
+
+
+def _get_symbol_detail(scanner, symbol: str) -> dict:
+    """Return scanner symbol detail from session-scoped in-memory cache."""
+    if symbol not in _symbol_detail_cache:
+        _symbol_detail_cache[symbol] = scanner.get_symbol_detail(symbol) or {}
+        logger.debug("Symbol detail cached for %s", symbol)
+    return _symbol_detail_cache[symbol]
+
+
+# ── Motley Fool URL disk cache ─────────────────────────────────────────────────
+
+def _fool_url_cache_path() -> str:
+    logs_dir = os.path.join(os.getcwd(), "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    return os.path.join(logs_dir, "motley_fool_url_cache.json")
+
+
+def _load_fool_url_cache() -> dict:
+    try:
+        p = _fool_url_cache_path()
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning("Could not load Motley Fool URL cache: %s", e)
+    return {}
+
+
+def _save_fool_url_cache(cache: dict):
+    try:
+        with open(_fool_url_cache_path(), "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+    except Exception as e:
+        logger.warning("Could not save Motley Fool URL cache: %s", e)
+
+
+def _fetch_motley_fool_cached(symbols: list) -> list:
+    """
+    Fetch Motley Fool articles, skipping any URL seen in the last 24 hours.
+    Persists seen URLs to disk so deduplication survives agent restarts.
+    """
+    url_cache = _load_fool_url_cache()
+    now = datetime.now(timezone.utc)
+    ttl = timedelta(hours=24)
+
+    # Evict expired URLs
+    fresh_cache = {
+        url: ts for url, ts in url_cache.items()
+        if now - datetime.fromisoformat(ts) < ttl
+    }
+
+    all_items = fetch_motley_fool(symbols)
+
+    new_items = []
+    for item in all_items:
+        if item.url not in fresh_cache:
+            new_items.append(item)
+            fresh_cache[item.url] = now.isoformat()
+
+    skipped = len(all_items) - len(new_items)
+    if skipped:
+        logger.debug("Motley Fool URL cache: skipped %d already-seen articles", skipped)
+
+    _save_fool_url_cache(fresh_cache)
+    logger.info(
+        "Motley Fool: %d new articles (%d cached/skipped)",
+        len(new_items), skipped,
+    )
+    return new_items
+
+
+# ── Main research cycle ────────────────────────────────────────────────────────
+
+def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, clinical_cal=None):
     logger.info("=== Research cycle starting ===")
 
-    # 1. Base watchlist
     base_symbols = config.watchlist.all_symbols
     logger.info("Base watchlist: %d symbols", len(base_symbols))
 
-    # 2. Market scanner — discover new opportunities (market hours only)
     scanner_hits = []
     binary_catalyst_symbols = []
     discovered_symbols = []
@@ -70,10 +262,11 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
     else:
         logger.info("Scanner skipped -- market closed")
 
-    # 2b. Earnings calendar check
+    # Earnings — 6h cached
+    earnings_events = {}
     if earnings_cal:
         try:
-            earnings_events = earnings_cal.get_events(base_symbols)
+            earnings_events = _get_earnings_events(earnings_cal, base_symbols)
             pre = [s for s, ev in earnings_events.items() if ev.is_pre_earnings_window]
             upcoming = [f"{s} ({ev.days_until}d)" for s, ev in earnings_events.items() if ev.days_until <= 7]
             if pre:
@@ -89,7 +282,7 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         except Exception as e:
             logger.warning("Earnings calendar error: %s", e)
 
-    # Process scanner hits
+    # Scanner hits — cached symbol detail
     from collector import ResearchItem
     scanner_items = []
 
@@ -109,7 +302,7 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
             if hit.symbol not in base_symbols:
                 discovered_symbols.append(hit.symbol)
 
-            detail = scanner.get_symbol_detail(hit.symbol) or {}
+            detail = _get_symbol_detail(scanner, hit.symbol)
             summary = (
                 f"{detail.get('company_name', hit.symbol)} "
                 f"({detail.get('sector','?')} / {detail.get('industry','?')}): "
@@ -130,25 +323,17 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
     if binary_catalyst_symbols:
         logger.info("BINARY CATALYST STOCKS detected (>20%% move): %s", binary_catalyst_symbols)
 
-    # Combined symbol list
     all_symbols = list(dict.fromkeys(base_symbols + discovered_symbols))
     logger.info("Total symbols to research this cycle: %d", len(all_symbols))
 
-    # 2b. IV spike monitor — runs after market close for end-of-day data
+    # IV spikes — daily cached (after close only)
     iv_items = []
     if iv_monitor and not is_market_open():
         try:
-            from collector import ResearchItem
-            # Get earnings symbols to distinguish explained vs unexplained IV
-            earnings_soon = []
-            if earnings_cal:
-                try:
-                    ev = earnings_cal.get_events(all_symbols)
-                    earnings_soon = [s for s, e in ev.items() if e.days_until <= 7]
-                except Exception:
-                    pass
-
-            iv_spikes = iv_monitor.scan(all_symbols, earnings_symbols=earnings_soon)
+            earnings_soon = [
+                s for s, e in earnings_events.items() if e.days_until <= 7
+            ]
+            iv_spikes = _get_iv_spikes(iv_monitor, all_symbols, earnings_soon)
 
             for snap in iv_spikes:
                 has_earnings = snap.symbol in earnings_soon
@@ -180,27 +365,19 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         except Exception as e:
             logger.warning("IV monitor error: %s", e)
     elif is_market_open():
-        iv_items = []
         logger.debug("IV monitor skipped -- runs after market close only")
 
-    # 2c. Insider trading monitor
+    # Insider buys — 4h cached
     insider_items = []
     if insider_monitor:
         try:
-            from collector import ResearchItem
-            significant_buys = insider_monitor.get_significant_buys(
-                all_symbols, days_back=14
-            )
+            significant_buys = _get_insider_buys(insider_monitor, all_symbols)
             if significant_buys:
-                logger.info(
-                    "Insider Monitor: %d significant buys found",
-                    len(significant_buys),
-                )
+                logger.info("Insider Monitor: %d significant buys found", len(significant_buys))
             for txn in significant_buys:
                 logger.info(
                     "INSIDER BUY: %s -- %s (%s) bought $%,.0f worth",
-                    txn.symbol, txn.insider_name,
-                    txn.insider_title, txn.total_value,
+                    txn.symbol, txn.insider_name, txn.insider_title, txn.total_value,
                 )
                 insider_items.append(ResearchItem(
                     source="insider",
@@ -226,7 +403,7 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         except Exception as e:
             logger.warning("Insider monitor error: %s", e)
 
-    # 3. Collect from all sources
+    # News, SEC, Reddit — no caching here (freshness matters)
     news_items = fetch_news(
         all_symbols,
         api_key=os.getenv("MASSIVE_API_KEY", os.getenv("BENZINGA_API_KEY", "")),
@@ -245,18 +422,86 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
     )
 
-    all_items = news_items + sec_items + reddit_items + scanner_items + insider_items + iv_items
+    # Motley Fool — 24h URL disk cache
+    try:
+        fool_items = _fetch_motley_fool_cached(all_symbols)
+    except Exception as e:
+        logger.warning("Motley Fool fetcher error: %s", e)
+        fool_items = []
+
+    # Clinical catalyst monitor — FDA/Phase 3/PDUFA dates for biotech symbols
+    # Cached 12h inside ClinicalCatalystCalendar. Generates ResearchItems so
+    # Claude treats upcoming readouts as high-risk context in its analysis.
+    clinical_items = []
+    clinical_catalyst_symbols = []
+    if clinical_cal:
+        try:
+            clinical_events = clinical_cal.get_events(all_symbols)
+            pre_catalyst = clinical_cal.get_pre_catalyst_symbols(all_symbols)
+            high_risk = clinical_cal.get_high_risk_symbols(all_symbols)
+
+            if pre_catalyst:
+                logger.warning(
+                    "CLINICAL CATALYST WARNING (within %dd): %s",
+                    clinical_cal.__class__.__mro__[0].__init__.__defaults__ or [7],
+                    pre_catalyst,
+                )
+            if high_risk:
+                logger.warning(
+                    "HIGH-RISK BINARY CATALYST (PDUFA/Phase3): %s -- "
+                    "agent will block new positions",
+                    high_risk,
+                )
+                clinical_catalyst_symbols.extend(high_risk)
+
+            for sym, catalyst in clinical_events.items():
+                logger.info(
+                    "[%s] Clinical catalyst: %s %s in %d days (%s, %s)",
+                    sym, catalyst.catalyst_type, catalyst.drug_name,
+                    catalyst.days_until, catalyst.catalyst_date, catalyst.source,
+                )
+                clinical_items.append(ResearchItem(
+                    source="clinical_catalyst",
+                    symbol=sym,
+                    title=(
+                        f"[CLINICAL CATALYST|{catalyst.catalyst_type}] "
+                        f"{sym}: {catalyst.drug_name or catalyst.catalyst_type} "
+                        f"readout in {catalyst.days_until}d"
+                    ),
+                    summary=catalyst.to_prompt_text(),
+                    url=f"https://www.biopharmcatalyst.com/company/{sym}",
+                    published_at=datetime.now(timezone.utc),
+                    raw={
+                        "catalyst_type": catalyst.catalyst_type,
+                        "catalyst_date": catalyst.catalyst_date.isoformat(),
+                        "days_until": catalyst.days_until,
+                        "risk_level": catalyst.risk_level,
+                        "confirmed": catalyst.confirmed,
+                        "drug_name": catalyst.drug_name,
+                        "is_pre_catalyst": catalyst.is_pre_catalyst_window,
+                        "is_high_risk": catalyst.is_high_risk,
+                    },
+                ))
+        except Exception as e:
+            logger.warning("Clinical catalyst monitor error: %s", e)
+
+    all_items = (
+        news_items + sec_items + reddit_items +
+        scanner_items + insider_items + iv_items + fool_items + clinical_items
+    )
     logger.info(
-        "Collected %d items -- news=%d, SEC=%d, Reddit=%d, Scanner=%d, Insider=%d, IV=%d",
+        "Collected %d items -- news=%d, SEC=%d, Reddit=%d, "
+        "Scanner=%d, Insider=%d, IV=%d, MotleyFool=%d, Clinical=%d",
         len(all_items), len(news_items), len(sec_items),
-        len(reddit_items), len(scanner_items), len(insider_items), len(iv_items),
+        len(reddit_items), len(scanner_items), len(insider_items),
+        len(iv_items), len(fool_items), len(clinical_items),
     )
 
     if not all_items:
         logger.warning("No research items collected this cycle")
         return
 
-    # 4. Analyse with Claude
+    # Analyse with Claude (analysis cache with 4h TTL handled in analyst.py)
     reports = analyst.analyse_all(all_items, all_symbols)
     high_conviction = [r for r in reports if r.conviction >= CONVICTION_THRESHOLD]
 
@@ -265,10 +510,11 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         len(reports), len(high_conviction),
     )
 
-    # 5. Write signals to DB
     for r in reports:
         if r.symbol in binary_catalyst_symbols:
             ttl = 6
+        elif r.symbol in clinical_catalyst_symbols:
+            ttl = 8  # Clinical catalysts get longer TTL — risk window spans days
         elif r.symbol in discovered_symbols:
             ttl = 2
         else:
@@ -291,7 +537,6 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
             ttl_hours=ttl,
         )
 
-    # 6. Email high-conviction signals
     if high_conviction:
         send_alert(high_conviction)
         logger.info("Alert sent for: %s", [r.symbol for r in high_conviction])
@@ -306,13 +551,19 @@ def main():
     logger.info("  Interval: %ds (%d min)", RESEARCH_INTERVAL, RESEARCH_INTERVAL // 60)
     logger.info("  Conviction threshold: %.0f%%", CONVICTION_THRESHOLD * 100)
     logger.info("  Watchlist: %d symbols", len(config.watchlist.all_symbols))
+    logger.info(
+        "  Cache TTLs: earnings=%dh | insider=%dh | IV=daily | fool=24h | analysis=%sh",
+        EARNINGS_CACHE_TTL_HOURS, INSIDER_CACHE_TTL_HOURS,
+        os.getenv("ANALYSIS_CACHE_TTL_HOURS", "4"),
+    )
 
-    analyst      = ResearchAnalyst(config.anthropic)
-    store        = ResearchStore()
-    earnings_cal = EarningsCalendar()
+    analyst         = ResearchAnalyst(config.anthropic)
+    store           = ResearchStore()
+    earnings_cal    = EarningsCalendar()
     insider_monitor = InsiderMonitor()
-    iv_monitor = IVMonitor()
-    scanner      = MarketScanner(
+    iv_monitor      = IVMonitor()
+    clinical_cal    = ClinicalCatalystCalendar()
+    scanner         = MarketScanner(
         alpaca_api_key=os.getenv("ALPACA_API_KEY", ""),
         alpaca_secret_key=os.getenv("ALPACA_SECRET_KEY", ""),
         paper=os.getenv("ALPACA_PAPER", "true").lower() == "true",
@@ -330,7 +581,11 @@ def main():
 
     while running:
         try:
-            run_research_cycle(analyst, store, scanner, earnings_cal, insider_monitor, iv_monitor)
+            run_research_cycle(
+                analyst, store, scanner,
+                earnings_cal, insider_monitor, iv_monitor,
+                clinical_cal=clinical_cal,
+            )
         except Exception as e:
             logger.exception("Unhandled error in research cycle: %s", e)
 
@@ -349,3 +604,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ── Clinical catalyst integration patch ───────────────────────────────────────
+# Appended to existing research_agent.py.
+# Replace the run_research_cycle() call in main() with run_research_cycle_v2()
+# which passes clinical_cal through, or patch run_research_cycle to accept it.

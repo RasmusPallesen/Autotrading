@@ -21,6 +21,7 @@ from storage.trade_store import TradeStore
 from storage.research_store import ResearchStore
 from data.massive_indicators import MassiveIndicatorFetcher
 from data.earnings_calendar import EarningsCalendar
+from data.clinical_catalyst_calendar import ClinicalCatalystCalendar
 
 # Logging setup
 # Create logs directory if it doesn't exist (needed for local runs)
@@ -142,6 +143,116 @@ def should_opportunity_sell(
     )
 
 
+def execute_opportunity_sell(
+    decision,
+    positions: list,
+    positions_map: dict,
+    research_signals: dict,
+    executor: AlpacaExecutor,
+    risk: RiskManager,
+    store: TradeStore,
+    data_fetcher: AlpacaDataFetcher,
+) -> tuple:
+    """
+    If at max positions and a new BUY signal arrives for an unheld symbol,
+    evaluate and potentially sell the weakest position to make room.
+
+    Must be called BEFORE risk.check() so that freed cash is visible
+    to the risk manager when it evaluates the incoming BUY.
+
+    Returns (positions, positions_map) — refreshed from Alpaca if a sell
+    executed, unchanged otherwise.
+    """
+    current_count = len({p["symbol"] for p in positions})
+    symbol_held = decision.symbol in positions_map
+
+    if current_count < config.risk.max_open_positions or symbol_held:
+        return positions, positions_map
+
+    weakest = find_weakest_position(positions, positions_map, research_signals)
+    if not weakest:
+        return positions, positions_map
+
+    should_sell, sell_reason = should_opportunity_sell(
+        decision.confidence, weakest, research_signals,
+    )
+
+    if not should_sell:
+        logger.info("Opportunity sell declined: %s", sell_reason)
+        return positions, positions_map
+
+    logger.info("OPPORTUNITY SELL triggered: %s", sell_reason)
+    sell_result = executor.sell(symbol=weakest["symbol"], close_all=True)
+
+    if not sell_result:
+        logger.warning("Opportunity sell order failed for %s", weakest["symbol"])
+        return positions, positions_map
+
+    sold_val = float(weakest.get("market_value") or 0)
+    risk.record_sale(sold_val)
+    store.log_execution(
+        order_id=sell_result.get("order_id", ""),
+        symbol=weakest["symbol"],
+        side="SELL",
+        notional=sold_val,
+    )
+    store.log_decision(
+        symbol=weakest["symbol"],
+        action="SELL",
+        confidence=0.70,
+        rationale=f"Opportunity sell: {sell_reason}",
+        urgency="MEDIUM",
+        approved=True,
+        approval_reason="Sold to fund higher-conviction opportunity",
+        notional=sold_val,
+    )
+
+    # Optimistically remove the sold position from local state immediately.
+    # This guarantees risk.check() sees the correct count even if Alpaca's
+    # API hasn't reflected the sell yet (race condition — both events at 17:01).
+    sold_symbol = weakest["symbol"]
+    positions = [p for p in positions if p["symbol"] != sold_symbol]
+    positions_map = {p["symbol"]: p for p in positions}
+    logger.debug(
+        "Optimistic position removal: %s removed locally, count now %d",
+        sold_symbol, len(positions),
+    )
+
+    # Attempt a live refresh from Alpaca to get accurate cash/buying_power.
+    # Retry once after a short delay to give Alpaca time to process the order.
+    # Only accept the refresh if Alpaca has actually dropped the position —
+    # if the order is still pending, keep our optimistic local state instead.
+    import time as _time
+    for attempt in range(2):
+        try:
+            refreshed = data_fetcher.get_positions()
+            if not any(p["symbol"] == sold_symbol for p in refreshed):
+                positions = refreshed
+                positions_map = {p["symbol"]: p for p in positions}
+                logger.debug(
+                    "Alpaca refresh confirmed sell: %d positions remaining",
+                    len(positions),
+                )
+                break
+            else:
+                if attempt == 0:
+                    logger.debug(
+                        "Alpaca still shows %s -- retrying in 1s", sold_symbol
+                    )
+                    _time.sleep(1)
+                else:
+                    logger.info(
+                        "Alpaca still shows %s after retry -- "
+                        "using optimistic local state (%d positions)",
+                        sold_symbol, len(positions),
+                    )
+        except Exception as e:
+            logger.warning("Portfolio refresh after opportunity sell failed: %s", e)
+            break
+
+    return positions, positions_map
+
+
 def validate_config():
     missing = []
     if not config.alpaca.api_key:
@@ -250,6 +361,7 @@ def run_loop(
     research_store: ResearchStore = None,
     massive_fetcher=None,
     earnings_cal=None,
+    clinical_cal=None,
 ):
     logger.info("--- Agent loop tick ---")
 
@@ -349,7 +461,7 @@ def run_loop(
         earnings_events=earnings_events,
     )
 
-    # 6. Rank all decisions by conviction before acting
+    # 8. Rank all decisions by conviction before acting
     # SELLs always go first (free up cash), then BUYs ranked by conviction
     sells = sorted(
         [d for d in decisions if d.action == "SELL"],
@@ -384,7 +496,7 @@ def run_loop(
             notional=None,
         )
 
-    # Execute SELLs first to free up cash
+    # 9. Execute SELLs first to free up cash, then BUYs ranked by conviction
     for decision in sells + buys:
         is_discovery = decision.symbol in discovered_symbols
 
@@ -395,7 +507,8 @@ def run_loop(
                 decision.confidence, decision.rationale,
             )
 
-        # Re-fetch portfolio state after each SELL so cash reflects freed funds
+        # Re-fetch portfolio state after each Claude-initiated SELL so
+        # subsequent BUYs see the freed cash correctly
         if decision.action == "BUY" and sells:
             try:
                 portfolio = data_fetcher.get_account()
@@ -404,10 +517,44 @@ def run_loop(
             except Exception as e:
                 logger.warning("Could not refresh portfolio state: %s", e)
 
+        # Suppress new BUYs near clinical catalyst events (Phase 3 / PDUFA)
+        # Wider window than earnings — 7 days by default via PRE_CATALYST_DAYS
+        pre_catalyst_symbols = []
+        if clinical_cal:
+            try:
+                pre_catalyst_symbols = clinical_cal.get_pre_catalyst_symbols(all_symbols)
+                if pre_catalyst_symbols:
+                    logger.warning(
+                        "Clinical catalyst symbols in caution window: %s",
+                        pre_catalyst_symbols,
+                    )
+            except Exception as _e:
+                logger.debug("Clinical catalyst check error: %s", _e)
+
+        if (decision.action == "BUY"
+                and decision.symbol in pre_catalyst_symbols
+                and decision.symbol not in positions_map):
+            logger.info(
+                "[%s] BUY suppressed -- clinical catalyst within caution window "
+                "(Phase3/PDUFA binary risk)",
+                decision.symbol,
+            )
+            store.log_decision(
+                symbol=decision.symbol,
+                action="HOLD",
+                confidence=decision.confidence,
+                rationale=f"Clinical catalyst caution: {decision.rationale}",
+                urgency="LOW",
+                approved=False,
+                approval_reason="Clinical catalyst within caution window -- no new positions",
+                notional=None,
+            )
+            continue
+
         # Suppress new BUYs within 48h of earnings — binary risk
-        if (decision.action == "BUY" and
-                decision.symbol in pre_earnings_symbols and
-                decision.symbol not in positions_map):
+        if (decision.action == "BUY"
+                and decision.symbol in pre_earnings_symbols
+                and decision.symbol not in positions_map):
             logger.info(
                 "[%s] BUY suppressed -- earnings in <48h (pre-earnings caution)",
                 decision.symbol,
@@ -424,49 +571,24 @@ def run_loop(
             )
             continue
 
-        # Opportunity-cost check: before risk verdict, evaluate selling
-        # weakest position if we are at max and this is a new BUY signal
+        # ── Opportunity-cost sell ────────────────────────────────────────────
+        # Runs BEFORE risk.check() so any freed cash is visible to the risk
+        # manager. If a sell executes, positions/positions_map are refreshed
+        # from Alpaca before we proceed. This is the single canonical location
+        # for opportunity-sell logic — there is no second block below.
         if decision.action == "BUY":
-            current_count = len({p["symbol"] for p in positions})
-            symbol_held = decision.symbol in positions_map
-            if current_count >= config.risk.max_open_positions and not symbol_held:
-                weakest = find_weakest_position(positions, positions_map, research_signals)
-                if weakest:
-                    should_sell, sell_reason = should_opportunity_sell(
-                        decision.confidence, weakest, research_signals,
-                    )
-                    if should_sell:
-                        logger.info("OPPORTUNITY SELL triggered: %s", sell_reason)
-                        sell_result = executor.sell(symbol=weakest["symbol"], close_all=True)
-                        if sell_result:
-                            sold_val = float(weakest.get("market_value") or 0)
-                            risk.record_sale(sold_val)
-                            store.log_execution(
-                                order_id=sell_result.get("order_id", ""),
-                                symbol=weakest["symbol"],
-                                side="SELL",
-                                notional=sold_val,
-                            )
-                            store.log_decision(
-                                symbol=weakest["symbol"],
-                                action="SELL",
-                                confidence=0.70,
-                                rationale=f"Opportunity sell: {sell_reason}",
-                                urgency="MEDIUM",
-                                approved=True,
-                                approval_reason="Sold to fund higher-conviction opportunity",
-                                notional=sold_val,
-                            )
-                            # Refresh portfolio after sell
-                            try:
-                                portfolio = data_fetcher.get_account()
-                                positions = data_fetcher.get_positions()
-                                positions_map = {p["symbol"]: p for p in positions}
-                            except Exception as e:
-                                logger.warning("Portfolio refresh failed: %s", e)
-                    else:
-                        logger.info("Opportunity sell declined: %s", sell_reason)
+            positions, positions_map = execute_opportunity_sell(
+                decision=decision,
+                positions=positions,
+                positions_map=positions_map,
+                research_signals=research_signals,
+                executor=executor,
+                risk=risk,
+                store=store,
+                data_fetcher=data_fetcher,
+            )
 
+        # ── Risk verdict (always sees post-sell portfolio state) ─────────────
         verdict = risk.check(
             decision=decision,
             portfolio=portfolio,
@@ -497,70 +619,8 @@ def run_loop(
         stop_loss, take_profit = risk.compute_stop_and_target(current_price, decision)
         notional = verdict.adjusted_notional
 
+        # ── Execute BUY ──────────────────────────────────────────────────────
         if decision.action == "BUY":
-            # Opportunity-cost check: if at max positions, evaluate selling weakest
-            current_position_count = len({p["symbol"] for p in positions})
-            at_max = current_position_count >= config.risk.max_open_positions
-            symbol_already_held = decision.symbol in positions_map
-
-            if at_max and not symbol_already_held:
-                weakest = find_weakest_position(positions, positions_map, research_signals)
-                if weakest:
-                    should_sell, sell_reason = should_opportunity_sell(
-                        decision.confidence, weakest, research_signals,
-                    )
-                    if should_sell:
-                        logger.info(
-                            "OPPORTUNITY SELL: %s",
-                            sell_reason,
-                        )
-                        # Execute the sell first
-                        sell_result = executor.sell(
-                            symbol=weakest["symbol"], close_all=True
-                        )
-                        if sell_result:
-                            sold_val = float(weakest.get("market_value") or 0)
-                            risk.record_sale(sold_val)
-                            store.log_execution(
-                                order_id=sell_result.get("order_id", ""),
-                                symbol=weakest["symbol"],
-                                side="SELL",
-                                notional=sold_val,
-                            )
-                            store.log_decision(
-                                symbol=weakest["symbol"],
-                                action="SELL",
-                                confidence=0.70,
-                                rationale=f"Opportunity sell: {sell_reason}",
-                                urgency="MEDIUM",
-                                approved=True,
-                                approval_reason="Sold to fund higher-conviction opportunity",
-                                notional=sold_val,
-                            )
-                            # Refresh portfolio state after sell
-                            try:
-                                portfolio = data_fetcher.get_account()
-                                positions = data_fetcher.get_positions()
-                                positions_map = {p["symbol"]: p for p in positions}
-                                # Re-run risk check with fresh portfolio
-                                verdict = risk.check(
-                                    decision=decision,
-                                    portfolio=portfolio,
-                                    positions=positions,
-                                    min_confidence=config.agent.min_confidence,
-                                )
-                                if not verdict.approved:
-                                    logger.warning(
-                                        "[%s] Still blocked after opportunity sell: %s",
-                                        decision.symbol, verdict.reason,
-                                    )
-                                    continue
-                                notional = verdict.adjusted_notional
-                            except Exception as e:
-                                logger.warning("Portfolio refresh after opportunity sell failed: %s", e)
-                    else:
-                        logger.info("Opportunity sell declined: %s", sell_reason)
-
             result = executor.buy(
                 symbol=decision.symbol,
                 notional=notional,
@@ -586,6 +646,7 @@ def run_loop(
                 portfolio["cash"] = max(0, float(portfolio.get("cash", 0)) - notional)
                 portfolio["buying_power"] = max(0, float(portfolio.get("buying_power", 0)) - notional)
 
+        # ── Execute Claude-initiated SELL ────────────────────────────────────
         elif decision.action == "SELL":
             existing = positions_map.get(decision.symbol)
             if existing:
@@ -619,14 +680,15 @@ def main():
     logger.info("  Base watchlist: %s", config.watchlist.stocks)
     logger.info("  Scanner trade threshold: %.0f%%", SCANNER_TRADE_THRESHOLD * 100)
 
-    data_fetcher   = AlpacaDataFetcher(config.alpaca)
+    data_fetcher    = AlpacaDataFetcher(config.alpaca)
     massive_fetcher = MassiveIndicatorFetcher()
-    earnings_cal = EarningsCalendar()
-    ai_engine      = AIDecisionEngine(config.anthropic)
-    executor       = AlpacaExecutor(config.alpaca)
-    risk           = RiskManager(config.risk)
-    store          = TradeStore()
-    research_store = ResearchStore()
+    earnings_cal    = EarningsCalendar()
+    clinical_cal    = ClinicalCatalystCalendar()
+    ai_engine       = AIDecisionEngine(config.anthropic)
+    executor        = AlpacaExecutor(config.alpaca)
+    risk            = RiskManager(config.risk)
+    store           = TradeStore()
+    research_store  = ResearchStore()
 
     try:
         account = data_fetcher.get_account()
@@ -647,7 +709,7 @@ def main():
     while running:
         if is_market_open():
             try:
-                run_loop(data_fetcher, None, ai_engine, executor, risk, store, research_store, massive_fetcher, earnings_cal)
+                run_loop(data_fetcher, None, ai_engine, executor, risk, store, research_store, massive_fetcher, earnings_cal, clinical_cal)
             except Exception as e:
                 logger.exception("Unhandled exception in agent loop: %s", e)
         else:

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sqlite3
+print("DATABASE_URL =", os.getenv("DATABASE_URL", "NOT SET"))
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional

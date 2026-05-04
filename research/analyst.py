@@ -2,6 +2,12 @@
 Research analyst: sends collected data to Claude for sentiment scoring
 and conviction rating per symbol.
 Includes disk-backed analysis cache to avoid re-analysing unchanged filings.
+
+Cache improvements:
+- Each entry now stores a `cached_at` timestamp
+- Entries older than ANALYSIS_CACHE_TTL_HOURS are treated as cache misses
+  (forces re-analysis of stale signals even if article titles haven't changed)
+- Cache max size raised to 500 entries
 """
 
 import hashlib
@@ -9,14 +15,19 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 import anthropic
 
 logger = logging.getLogger(__name__)
 
+# How long a cached analysis is considered fresh.
+# After this, the symbol is re-analysed even if article titles haven't changed.
+ANALYSIS_CACHE_TTL_HOURS = int(os.getenv("ANALYSIS_CACHE_TTL_HOURS", "4"))
+
+
 # ── Simple disk cache ──────────────────────────────────────────────────────────
-# Uses current working directory (project root when launched from start_research.bat)
 
 def _cache_path() -> str:
     cwd = os.getcwd()
@@ -52,6 +63,22 @@ def _make_key(symbol: str, items) -> str:
     titles = sorted(item.title for item in items if item.title)
     raw = symbol + "|" + "|".join(titles[:10])
     return hashlib.md5(raw.encode()).hexdigest()
+
+
+def _is_cache_entry_fresh(entry: dict) -> bool:
+    """
+    Returns True if the cache entry is within the TTL window.
+    Entries without a cached_at timestamp (legacy entries) are treated as stale.
+    """
+    cached_at_str = entry.get("cached_at")
+    if not cached_at_str:
+        return False
+    try:
+        cached_at = datetime.fromisoformat(cached_at_str)
+        age = datetime.now(timezone.utc) - cached_at
+        return age < timedelta(hours=ANALYSIS_CACHE_TTL_HOURS)
+    except Exception:
+        return False
 
 
 # Global cache — loaded once when first analyse_all() is called
@@ -169,28 +196,32 @@ class ResearchAnalyst:
         if not items:
             return self._empty(symbol)
 
-        # Check cache
         key = _make_key(symbol, items)
         if key in _CACHE:
-            cached = _CACHE[key]
-            logger.info(
-                "[%s] CACHE HIT -- skipping Claude (conviction=%.0f%%, %d cached)",
-                symbol, cached.get("conviction", 0) * 100, len(_CACHE),
-            )
-            return ResearchReport(
-                symbol=symbol,
-                overall_sentiment=cached.get("overall_sentiment", "NEUTRAL"),
-                conviction=float(cached.get("conviction", 0.0)),
-                summary=cached.get("summary", ""),
-                key_points=cached.get("key_points", []),
-                risk_factors=cached.get("risk_factors", []),
-                recommended_action=cached.get("recommended_action", "HOLD"),
-                sources_used=cached.get("sources_used", 0),
-                confidence_explanation=cached.get("confidence_explanation", ""),
-            )
+            entry = _CACHE[key]
+            if _is_cache_entry_fresh(entry):
+                logger.info(
+                    "[%s] CACHE HIT (fresh) -- skipping Claude (conviction=%.0f%%, %d cached)",
+                    symbol, entry.get("conviction", 0) * 100, len(_CACHE),
+                )
+                return ResearchReport(
+                    symbol=symbol,
+                    overall_sentiment=entry.get("overall_sentiment", "NEUTRAL"),
+                    conviction=float(entry.get("conviction", 0.0)),
+                    summary=entry.get("summary", ""),
+                    key_points=entry.get("key_points", []),
+                    risk_factors=entry.get("risk_factors", []),
+                    recommended_action=entry.get("recommended_action", "HOLD"),
+                    sources_used=entry.get("sources_used", 0),
+                    confidence_explanation=entry.get("confidence_explanation", ""),
+                )
+            else:
+                logger.info(
+                    "[%s] CACHE STALE (>%dh old) -- re-analysing",
+                    symbol, ANALYSIS_CACHE_TTL_HOURS,
+                )
 
-        # Cache miss — call Claude
-        logger.info("[%s] Cache miss -- calling Claude", symbol)
+        logger.info("[%s] Calling Claude for analysis", symbol)
 
         context_lines = [f"Research items for {symbol} ({len(items)} total):\n"]
         for i, item in enumerate(items[:25], 1):
@@ -224,8 +255,9 @@ class ResearchAnalyst:
                 confidence_explanation=data.get("confidence_explanation", ""),
             )
 
-            # Save to cache
+            # Save to cache with timestamp
             _CACHE[key] = {
+                "cached_at": datetime.now(timezone.utc).isoformat(),
                 "overall_sentiment": report.overall_sentiment,
                 "conviction": report.conviction,
                 "summary": report.summary,
@@ -235,11 +267,12 @@ class ResearchAnalyst:
                 "sources_used": report.sources_used,
                 "confidence_explanation": report.confidence_explanation,
             }
-            if len(_CACHE) > 300:
+
+            if len(_CACHE) > 500:
                 oldest = next(iter(_CACHE))
                 del _CACHE[oldest]
-            _save_cache(_CACHE)
 
+            _save_cache(_CACHE)
             return report
 
         except Exception as e:
@@ -249,7 +282,6 @@ class ResearchAnalyst:
     def analyse_all(self, items, symbols: List[str]) -> List[ResearchReport]:
         global _CACHE, _CACHE_LOADED
 
-        # Load cache on first call
         if not _CACHE_LOADED:
             _CACHE = _load_cache()
             _CACHE_LOADED = True

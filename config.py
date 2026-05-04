@@ -39,11 +39,11 @@ class AnthropicConfig:
 
 @dataclass
 class RiskConfig:
-    max_position_pct: float = 0.02
+    max_position_pct: float = 0.1
     stop_loss_pct: float = 0.05
-    take_profit_pct: float = 0.15
-    max_daily_drawdown_pct: float = 0.02
-    max_open_positions: int = 15
+    take_profit_pct: float = 0.10
+    max_daily_drawdown_pct: float = 0.04
+    max_open_positions: int = 10
 
 
 @dataclass
