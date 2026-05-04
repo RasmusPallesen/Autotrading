@@ -103,6 +103,7 @@ def should_opportunity_sell(
     weakest_position: dict,
     research_signals: dict,
     min_confidence_gap: float = 0.15,
+    earnings_events: dict = None,
 ) -> tuple:
     """
     Decide whether to sell the weakest position to fund a new opportunity.
@@ -119,6 +120,20 @@ def should_opportunity_sell(
     # Never sell a position that is up more than 10% — let winners run
     if pnl_pct > 10.0:
         return False, f"{symbol} is up {pnl_pct:.1f}% -- protecting winner"
+
+    # Never sell within 7 days of a strong earnings beat (>=10% EPS surprise).
+    # Root cause of LLY 05/04 error: 22% EPS beat 4 days prior, stale cache
+    # showed 35% conviction, triggering an opportunity sell on a rising stock.
+    earnings_event = (earnings_events or {}).get(symbol)
+    if earnings_event and earnings_event.is_strong_beat:
+        return False, (
+            f"{symbol} had a strong earnings beat {abs(earnings_event.days_until)}d ago "
+            f"(EPS surprise: +{earnings_event.eps_surprise_pct:.1f}%) -- "
+            f"protecting post-earnings momentum"
+        )
+    if earnings_event and earnings_event.is_strong_miss:
+        # Strong miss is actually a reason TO sell — don't veto
+        pass
 
     # Get current research conviction for weakest position
     research = research_signals.get(symbol, {})
@@ -152,6 +167,7 @@ def execute_opportunity_sell(
     risk: RiskManager,
     store: TradeStore,
     data_fetcher: AlpacaDataFetcher,
+    earnings_events: dict = None,
 ) -> tuple:
     """
     If at max positions and a new BUY signal arrives for an unheld symbol,
@@ -175,6 +191,7 @@ def execute_opportunity_sell(
 
     should_sell, sell_reason = should_opportunity_sell(
         decision.confidence, weakest, research_signals,
+        earnings_events=earnings_events,
     )
 
     if not should_sell:
@@ -467,20 +484,38 @@ def run_loop(
         [d for d in decisions if d.action == "SELL"],
         key=lambda d: d.confidence, reverse=True,
     )
+
+    # Urgency-weighted buy ranking.
+    # Pure confidence ranking caused the PODD RSI-10.5 HIGH urgency signal on 05/04
+    # to lose its queue position to MEDIUM urgency buys that consumed settled cash first.
+    # Scoring: urgency tier (HIGH=3, MEDIUM=2, LOW=1) × 0.20 + confidence.
+    # This means a HIGH urgency signal at 77% confidence scores 3×0.20 + 0.77 = 1.37,
+    # beating a MEDIUM urgency signal at 90% confidence (2×0.20 + 0.90 = 1.30).
+    # Effectively: HIGH urgency adds ~13% to the ranking score vs MEDIUM.
+    _URGENCY_WEIGHT = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+
+    def _buy_score(d) -> float:
+        urgency_tier = _URGENCY_WEIGHT.get(getattr(d, "urgency", "MEDIUM"), 2)
+        return urgency_tier * 0.20 + d.confidence
+
     buys = sorted(
         [d for d in decisions if d.action == "BUY"],
-        key=lambda d: d.confidence, reverse=True,
+        key=_buy_score, reverse=True,
     )
     holds = [d for d in decisions if d.action == "HOLD"]
 
     logger.info(
-        "Decision summary: %d SELLs | %d BUYs (ranked by conviction) | %d HOLDs",
+        "Decision summary: %d SELLs | %d BUYs (urgency-weighted ranking) | %d HOLDs",
         len(sells), len(buys), len(holds),
     )
     if buys:
         logger.info(
             "BUY ranking: %s",
-            " > ".join(f"{d.symbol}({d.confidence:.0%})" for d in buys),
+            " > ".join(
+                f"{d.symbol}({d.confidence:.0%},{getattr(d,'urgency','?')},"
+                f"score={_buy_score(d):.2f})"
+                for d in buys
+            ),
         )
 
     # Log HOLDs first (no action needed)
@@ -586,6 +621,7 @@ def run_loop(
                 risk=risk,
                 store=store,
                 data_fetcher=data_fetcher,
+                earnings_events=earnings_events,
             )
 
         # ── Risk verdict (always sees post-sell portfolio state) ─────────────
@@ -621,13 +657,21 @@ def run_loop(
 
         # ── Execute BUY ──────────────────────────────────────────────────────
         if decision.action == "BUY":
+            # Skip buy if PDT block is already active this session
+            if executor.is_pdt_blocked:
+                logger.warning(
+                    "[%s] BUY skipped -- PDT block active this session",
+                    decision.symbol,
+                )
+                continue
+
             result = executor.buy(
                 symbol=decision.symbol,
                 notional=notional,
                 stop_loss_price=stop_loss,
                 take_profit_price=take_profit,
             )
-            if result:
+            if result and not hasattr(result, 'is_pdt'):
                 store.log_execution(
                     order_id=result["order_id"],
                     symbol=decision.symbol,
@@ -651,7 +695,7 @@ def run_loop(
             existing = positions_map.get(decision.symbol)
             if existing:
                 result = executor.sell(symbol=decision.symbol, close_all=True)
-                if result:
+                if result and not hasattr(result, 'is_pdt'):
                     market_value = existing.get("market_value")
                     if not market_value:
                         qty = float(existing.get("qty", 0))
@@ -664,6 +708,12 @@ def run_loop(
                         symbol=decision.symbol,
                         side="SELL",
                         notional=sold_value,
+                    )
+                elif hasattr(result, 'is_pdt') and result.is_pdt:
+                    logger.warning(
+                        "[%s] SELL blocked by PDT -- position retained, "
+                        "stop-loss bracket at Alpaca remains active",
+                        decision.symbol,
                     )
             else:
                 logger.info("[%s] SELL signal but no open position.", decision.symbol)

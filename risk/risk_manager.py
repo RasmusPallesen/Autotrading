@@ -33,6 +33,7 @@ class RiskManager:
         self.take_profit_pct = config.take_profit_pct
         self.max_daily_drawdown_pct = config.max_daily_drawdown_pct
         self.max_open_positions = config.max_open_positions
+        self.min_settled_cash_reserve = getattr(config, 'min_settled_cash_reserve', 30.0)
 
         self._daily_start_equity: Optional[float] = None
         self._killed = False
@@ -98,13 +99,51 @@ class RiskManager:
         requested_pct = min(decision.suggested_position_pct, self.max_position_pct)
         notional = equity * requested_pct
 
-        # T+2 settlement check
+        # T+2 settlement check with urgency-aware reserve
+        # HIGH urgency signals (RSI extremes, volume spikes) can access the
+        # settled cash reserve. MEDIUM/LOW urgency signals cannot — the reserve
+        # is held back specifically for high-conviction opportunities like the
+        # PODD RSI-10.5 setup on 05/04 that was blocked by a $10.80 shortfall.
         total_cash = max(
             portfolio.get("cash", 0),
             portfolio.get("buying_power", 0),
         )
+        urgency = getattr(decision, "urgency", "MEDIUM")
+        is_high_urgency = urgency == "HIGH"
+
+        settled = self.settlement.settled_cash(total_cash)
+        usable = settled  # What's available for this trade
+
+        if not is_high_urgency:
+            # Non-HIGH trades must leave the reserve untouched
+            usable = max(0.0, settled - self.min_settled_cash_reserve)
+            if notional > usable:
+                return RiskVerdict(
+                    False,
+                    f"T+2 settlement block: Insufficient settled cash (reserve protected). "
+                    f"Requested: ${notional:,.2f} | "
+                    f"Available after ${self.min_settled_cash_reserve:.0f} reserve: ${usable:,.2f} | "
+                    f"Unsettled (T+2 pending): ${self.settlement.unsettled_amount():,.2f}"
+                )
+        else:
+            # HIGH urgency can use full settled cash including reserve
+            if notional > settled:
+                return RiskVerdict(
+                    False,
+                    f"T+2 settlement block (HIGH urgency — reserve waived): "
+                    f"Requested: ${notional:,.2f} | "
+                    f"Settled: ${settled:,.2f} | "
+                    f"Unsettled (T+2 pending): ${self.settlement.unsettled_amount():,.2f}"
+                )
+            logger.info(
+                "[%s] HIGH urgency trade accessing settlement reserve "
+                "(settled=$%.2f, reserve=$%.2f)",
+                decision.symbol, settled, self.min_settled_cash_reserve,
+            )
+
         can_buy, settlement_reason = self.settlement.can_buy(notional, total_cash)
-        if not can_buy:
+        if not can_buy and is_high_urgency:
+            # Redundant safety check — should not reach here
             return RiskVerdict(False, f"T+2 settlement block: {settlement_reason}")
 
         # Buying power cap

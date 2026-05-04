@@ -39,11 +39,12 @@ class AnthropicConfig:
 
 @dataclass
 class RiskConfig:
-    max_position_pct: float = 0.1
+    max_position_pct: float = 0.02
     stop_loss_pct: float = 0.05
-    take_profit_pct: float = 0.10
-    max_daily_drawdown_pct: float = 0.04
-    max_open_positions: int = 10
+    take_profit_pct: float = 0.15
+    max_daily_drawdown_pct: float = 0.02
+    max_open_positions: int = 15
+    min_settled_cash_reserve: float = 30.0   # Always keep $30 settled for HIGH urgency signals
 
 
 @dataclass

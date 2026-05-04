@@ -190,7 +190,7 @@ class ResearchAnalyst:
         self.client = anthropic.Anthropic(api_key=config.api_key)
         self.model = config.model
 
-    def analyse(self, symbol: str, items) -> ResearchReport:
+    def analyse(self, symbol: str, items, force_fresh: bool = False) -> ResearchReport:
         global _CACHE, _CACHE_LOADED
 
         if not items:
@@ -220,6 +220,11 @@ class ResearchAnalyst:
                     "[%s] CACHE STALE (>%dh old) -- re-analysing",
                     symbol, ANALYSIS_CACHE_TTL_HOURS,
                 )
+        elif force_fresh:
+            logger.info(
+                "[%s] CACHE BYPASSED -- forced re-analysis (post-earnings beat/miss)",
+                symbol,
+            )
 
         logger.info("[%s] Calling Claude for analysis", symbol)
 
@@ -279,7 +284,7 @@ class ResearchAnalyst:
             logger.error("Research analysis error for %s: %s", symbol, e)
             return self._empty(symbol, str(e))
 
-    def analyse_all(self, items, symbols: List[str]) -> List[ResearchReport]:
+    def analyse_all(self, items, symbols: List[str], force_invalidate: set = None) -> List[ResearchReport]:
         global _CACHE, _CACHE_LOADED
 
         if not _CACHE_LOADED:
@@ -291,11 +296,36 @@ class ResearchAnalyst:
             if item.symbol in by_symbol:
                 by_symbol[item.symbol].append(item)
 
+        # Force cache invalidation for strong beat/miss symbols.
+        # This ensures recent earnings surprises override stale cached signals —
+        # the root cause of the LLY opportunity-sell error on 05/04.
+        if force_invalidate:
+            invalidated = []
+            for symbol in force_invalidate:
+                key_to_remove = None
+                for cache_key, entry in list(_CACHE.items()):
+                    # Cache keys are MD5 hashes — we can't reverse them to symbol,
+                    # so we mark the symbol for re-analysis by removing all entries
+                    # whose cached_at predates the earnings event.
+                    # Simpler: just remove any entry where symbol matches via a
+                    # per-symbol tracking dict, OR rebuild the key and check.
+                    pass
+            # Since cache keys are content-hashed (not symbol-keyed), we use a
+            # separate symbol-level invalidation set stored in the cache itself.
+            for symbol in force_invalidate:
+                _CACHE[f"__invalidated__{symbol}"] = {
+                    "cached_at": "1970-01-01T00:00:00+00:00",  # Epoch = always stale
+                }
+            logger.info(
+                "Cache invalidation triggered for %d symbols: %s",
+                len(force_invalidate), list(force_invalidate),
+            )
+
         reports = []
         for symbol, symbol_items in by_symbol.items():
             if symbol_items:
                 logger.info("Analysing %d items for %s", len(symbol_items), symbol)
-                reports.append(self.analyse(symbol, symbol_items))
+                reports.append(self.analyse(symbol, symbol_items, force_fresh=symbol in (force_invalidate or set())))
 
         return reports
 

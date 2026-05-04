@@ -264,6 +264,7 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
 
     # Earnings — 6h cached
     earnings_events = {}
+    force_invalidate_symbols: set = set()  # Symbols needing cache bust after earnings surprise
     if earnings_cal:
         try:
             earnings_events = _get_earnings_events(earnings_cal, base_symbols)
@@ -279,6 +280,20 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
                 for sym in post:
                     if sym not in discovered_symbols:
                         discovered_symbols.append(sym)
+
+            # Detect strong beats/misses — these force analysis cache invalidation
+            # so stale research signals don't persist after major earnings surprises.
+            # This is the fix for the LLY opportunity-sell error on 05/04 where a
+            # 22% EPS beat was missed because the cache held a pre-earnings signal.
+            strong_beats = earnings_cal.get_strong_beat_symbols(base_symbols) if earnings_cal else []
+            strong_misses = earnings_cal.get_strong_miss_symbols(base_symbols) if earnings_cal else []
+            force_invalidate_symbols = set(strong_beats + strong_misses)
+            if force_invalidate_symbols:
+                logger.warning(
+                    "EARNINGS SURPRISE -- forcing cache invalidation for: %s "
+                    "(beats=%s, misses=%s)",
+                    list(force_invalidate_symbols), strong_beats, strong_misses,
+                )
         except Exception as e:
             logger.warning("Earnings calendar error: %s", e)
 
@@ -501,8 +516,9 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         logger.warning("No research items collected this cycle")
         return
 
-    # Analyse with Claude (analysis cache with 4h TTL handled in analyst.py)
-    reports = analyst.analyse_all(all_items, all_symbols)
+    # Analyse with Claude — pass force_invalidate so strong beat/miss symbols
+    # bypass the analysis cache and get a fresh Claude call this cycle.
+    reports = analyst.analyse_all(all_items, all_symbols, force_invalidate=force_invalidate_symbols)
     high_conviction = [r for r in reports if r.conviction >= CONVICTION_THRESHOLD]
 
     logger.info(

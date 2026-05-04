@@ -48,8 +48,8 @@ class EarningsEvent:
 
     @property
     def is_post_earnings(self) -> bool:
-        """True if earnings was in the last 2 days."""
-        return -2 <= self.days_until < 0
+        """True if earnings was in the last 7 days."""
+        return -7 <= self.days_until < 0
 
     @property
     def beat_miss(self) -> Optional[str]:
@@ -61,6 +61,36 @@ class EarningsEvent:
         elif self.eps_surprise_pct < -3:
             return "MISS"
         return "IN-LINE"
+
+
+    @property
+    def is_strong_beat(self) -> bool:
+        """
+        True if this is a post-earnings strong beat warranting cache invalidation.
+        Threshold: EPS surprise >= 10% — meaningful enough to override stale signals.
+        LLY Q1 2026 beat by 22%, GOOGL by 94% — both would trigger this.
+        """
+        if not self.is_post_earnings:
+            return False
+        if self.eps_surprise_pct is None:
+            return False
+        return self.eps_surprise_pct >= float(
+            __import__("os").getenv("STRONG_BEAT_THRESHOLD_PCT", "10")
+        )
+
+    @property
+    def is_strong_miss(self) -> bool:
+        """
+        True if this is a post-earnings significant miss warranting cache invalidation.
+        Threshold: EPS surprise <= -10%.
+        """
+        if not self.is_post_earnings:
+            return False
+        if self.eps_surprise_pct is None:
+            return False
+        return self.eps_surprise_pct <= -float(
+            __import__("os").getenv("STRONG_BEAT_THRESHOLD_PCT", "10")
+        )
 
     def to_prompt_text(self) -> str:
         """Format for injection into Claude's trading prompt."""
@@ -74,7 +104,7 @@ class EarningsEvent:
             )
         elif self.is_post_earnings and self.beat_miss:
             return (
-                f"EARNINGS RESULT: {self.symbol} reported {self.days_until * -1} day(s) ago. "
+                f"EARNINGS RESULT: {self.symbol} reported {abs(self.days_until)} day(s) ago. "
                 f"EPS {self.beat_miss}: actual=${self.eps_actual} vs estimate=${self.eps_estimate} "
                 f"(surprise: {self.eps_surprise_pct:+.1f}%). "
                 f"{'Strong buy signal on beat.' if self.beat_miss == 'BEAT' else 'Caution — earnings miss may continue to weigh.'}"
@@ -109,7 +139,9 @@ class EarningsCalendar:
             for sym, event in self._cache.items()
             if sym in symbols and (event.is_pre_earnings_window or
                                    event.is_post_earnings or
-                                   event.days_until <= 7)
+                                   event.days_until <= 7 or
+                                   event.is_strong_beat or
+                                   event.is_strong_miss)
         }
 
     def get_pre_earnings_symbols(self, symbols: List[str]) -> List[str]:
@@ -121,6 +153,23 @@ class EarningsCalendar:
         """Returns symbols that reported earnings in the last 2 days."""
         events = self.get_events(symbols)
         return [sym for sym, ev in events.items() if ev.is_post_earnings]
+
+
+    def get_strong_beat_symbols(self, symbols: List[str]) -> List[str]:
+        """
+        Returns symbols with a strong EPS beat (>=10% surprise) in the last 7 days.
+        Used to force cache invalidation in the research analyst.
+        """
+        events = self.get_events(symbols)
+        return [sym for sym, ev in events.items() if ev.is_strong_beat]
+
+    def get_strong_miss_symbols(self, symbols: List[str]) -> List[str]:
+        """
+        Returns symbols with a significant EPS miss (<=-10% surprise) in the last 7 days.
+        Used to force cache invalidation in the research analyst.
+        """
+        events = self.get_events(symbols)
+        return [sym for sym, ev in events.items() if ev.is_strong_miss]
 
     def _should_refresh(self) -> bool:
         if not self._last_refresh:
