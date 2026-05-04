@@ -147,16 +147,51 @@ class RiskManager:
             return RiskVerdict(False, f"T+2 settlement block: {settlement_reason}")
 
         # Buying power cap
+        # For HIGH urgency signals, require at least enough buying power to meet
+        # the minimum trade size before reducing notional. This prevents the agent
+        # from draining buying_power on MEDIUM trades and leaving HIGH urgency
+        # signals (like DXCM RSI-15.7 on 05/04) with only $3.56 to work with.
         buying_power = portfolio.get("buying_power", 0)
-        if notional > buying_power:
-            notional = buying_power * 0.95
-            if notional <= 0:
-                return RiskVerdict(False, "Insufficient buying power.")
-            logger.warning("Notional reduced to fit buying power: $%.2f", notional)
 
-        # Minimum trade size
-        if notional < 10:
-            return RiskVerdict(False, f"Trade notional ${notional:.2f} below minimum $10.")
+        # Reserve buying power for HIGH urgency signals:
+        # MEDIUM/LOW trades are blocked if buying power is below 2× minimum trade,
+        # preserving at least $20 for any HIGH urgency signal arriving later this tick.
+        min_trade = 10.0
+        high_urgency_reserve = min_trade * 2  # $20 reserved for HIGH urgency
+
+        if not is_high_urgency:
+            effective_buying_power = max(0.0, buying_power - high_urgency_reserve)
+            if notional > effective_buying_power:
+                if effective_buying_power < min_trade:
+                    return RiskVerdict(
+                        False,
+                        f"Insufficient buying power (reserving ${high_urgency_reserve:.0f} "
+                        f"for HIGH urgency signals). "
+                        f"Available: ${effective_buying_power:.2f} | "
+                        f"Total buying power: ${buying_power:.2f}"
+                    )
+                notional = effective_buying_power * 0.95
+                logger.warning(
+                    "Notional reduced to fit buying power (after HIGH urgency reserve): $%.2f",
+                    notional,
+                )
+        else:
+            # HIGH urgency: use full buying power, no reserve deduction
+            if notional > buying_power:
+                notional = buying_power * 0.95
+                if notional <= 0:
+                    return RiskVerdict(False, "Insufficient buying power.")
+                logger.warning(
+                    "HIGH urgency notional reduced to fit buying power: $%.2f", notional
+                )
+
+        # Minimum trade size — applies to all urgency levels
+        if notional < min_trade:
+            return RiskVerdict(
+                False,
+                f"Trade notional ${notional:.2f} below minimum ${min_trade:.0f}. "
+                f"{'(HIGH urgency — full buying power used)' if is_high_urgency else ''}"
+            )
 
         return RiskVerdict(True, f"Approved -- notional=${notional:.2f}", adjusted_notional=notional)
 

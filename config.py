@@ -132,7 +132,7 @@ class WatchlistConfig:
 
 @dataclass
 class AgentConfig:
-    loop_interval_seconds: int = 300
+    loop_interval_seconds: int = 900
     indicator_lookback: int = 50
     min_confidence: float = 0.65
     log_level: str = "INFO"
