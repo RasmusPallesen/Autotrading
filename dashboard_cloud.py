@@ -340,7 +340,7 @@ def load_decisions() -> pd.DataFrame:
     df = query("SELECT * FROM decisions ORDER BY id DESC LIMIT 200")
     if df.empty:
         return df
-    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("Europe/Copenhagen")
+    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_localize(None).dt.tz_localize("Europe/Copenhagen", ambiguous="infer", nonexistent="shift_forward")
     df["confidence_pct"] = (df["confidence"] * 100).round(1)
     return df
 
@@ -349,7 +349,7 @@ def load_executions() -> pd.DataFrame:
     df = query("SELECT * FROM executions ORDER BY id DESC LIMIT 50")
     if df.empty:
         return df
-    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("Europe/Copenhagen")
+    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_localize(None).dt.tz_localize("Europe/Copenhagen", ambiguous="infer", nonexistent="shift_forward")
     return df
 
 
@@ -364,7 +364,7 @@ def load_research() -> pd.DataFrame:
     """)
     if df.empty:
         return df
-    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("Europe/Copenhagen")
+    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_localize(None).dt.tz_localize("Europe/Copenhagen", ambiguous="infer", nonexistent="shift_forward")
     df["conviction_pct"] = (df["conviction"] * 100).round(0).astype(int)
     return df
 
@@ -383,7 +383,7 @@ def load_scanner() -> pd.DataFrame:
     """)
     if df.empty:
         return df
-    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("Europe/Copenhagen")
+    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_localize(None).dt.tz_localize("Europe/Copenhagen", ambiguous="infer", nonexistent="shift_forward")
     df["conviction_pct"] = (df["conviction"] * 100).round(0).astype(int)
     return df
 
@@ -400,7 +400,7 @@ def load_iv_signals() -> pd.DataFrame:
     """)
     if df.empty:
         return df
-    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("Europe/Copenhagen")
+    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_localize(None).dt.tz_localize("Europe/Copenhagen", ambiguous="infer", nonexistent="shift_forward")
     df["conviction_pct"] = (df["conviction"] * 100).round(0).astype(int)
     return df
 
@@ -417,7 +417,7 @@ def load_insider_signals() -> pd.DataFrame:
     """)
     if df.empty:
         return df
-    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("Europe/Copenhagen")
+    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_localize(None).dt.tz_localize("Europe/Copenhagen", ambiguous="infer", nonexistent="shift_forward")
     df["conviction_pct"] = (df["conviction"] * 100).round(0).astype(int)
     return df
 
@@ -457,7 +457,43 @@ if st.sidebar.button("Reconnect DB"):
 
 
 # ── Title ──────────────────────────────────────────────────────────────────────
-now_str = datetime.now().strftime("%H:%M")
+from datetime import timezone, timedelta
+import pytz
+
+# Copenhagen time
+cph_tz  = pytz.timezone("Europe/Copenhagen")
+nyse_tz = pytz.timezone("America/New_York")
+now_utc = datetime.now(timezone.utc)
+now_cph  = now_utc.astimezone(cph_tz)
+now_nyse = now_utc.astimezone(nyse_tz)
+
+cph_str  = now_cph.strftime("%H:%M")
+nyse_str = now_nyse.strftime("%H:%M ET")
+
+# NYSE market hours: Mon-Fri 09:30-16:00 ET
+def _market_status(dt_nyse) -> tuple:
+    """Returns (status_label, color, detail)"""
+    wd = dt_nyse.weekday()
+    if wd >= 5:
+        return "CLOSED", "#ef4444", "Weekend"
+    t = dt_nyse.time()
+    from datetime import time as _t
+    if _t(9, 30) <= t < _t(16, 0):
+        # Minutes until close
+        close = dt_nyse.replace(hour=16, minute=0, second=0, microsecond=0)
+        mins  = int((close - dt_nyse).total_seconds() / 60)
+        return "OPEN", "#22c55e", f"Closes in {mins}m"
+    elif _t(4, 0) <= t < _t(9, 30):
+        open_ = dt_nyse.replace(hour=9, minute=30, second=0, microsecond=0)
+        mins  = int((open_ - dt_nyse).total_seconds() / 60)
+        return "PRE-MKT", "#f59e0b", f"Opens in {mins}m"
+    elif _t(16, 0) <= t < _t(20, 0):
+        return "AFTER-HRS", "#f59e0b", "16:00-20:00 ET"
+    else:
+        return "CLOSED", "#ef4444", "Opens 09:30 ET"
+
+mkt_status, mkt_color, mkt_detail = _market_status(now_nyse)
+
 st.markdown(f"""
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
     <div>
@@ -468,11 +504,19 @@ st.markdown(f"""
         <div style="font-size:22px;font-weight:800;color:#f9fafb;line-height:1.1;">
             Agent Dashboard
         </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+            <span style="background:{mkt_color}22;color:{mkt_color};border:1px solid {mkt_color}44;
+                         font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;
+                         padding:2px 8px;border-radius:4px;">{mkt_status}</span>
+            <span style="font-size:11px;color:#6b7280;">{mkt_detail}</span>
+        </div>
     </div>
     <div style="text-align:right;">
         <div style="font-family:'JetBrains Mono',monospace;font-size:18px;
-                    font-weight:700;color:#f9fafb;">{now_str}</div>
-        <div style="font-size:10px;color:#6b7280;">auto-refresh {refresh}s</div>
+                    font-weight:700;color:#f9fafb;">{cph_str}</div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:11px;
+                    color:#6b7280;margin-top:2px;">{nyse_str}</div>
+        <div style="font-size:10px;color:#4b5563;margin-top:1px;">auto-refresh {refresh}s</div>
     </div>
 </div>
 """, unsafe_allow_html=True)

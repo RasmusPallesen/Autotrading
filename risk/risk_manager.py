@@ -64,6 +64,15 @@ class RiskManager:
                     "Daily drawdown limit hit (%.2f%% >= %.2f%%). Kill switch activated.",
                     drawdown * 100, self.max_daily_drawdown_pct * 100,
                 )
+                try:
+                    from notifier import notify_kill_switch
+                    notify_kill_switch(
+                        reason=f"Daily drawdown {drawdown*100:.2f}% exceeded limit {self.max_daily_drawdown_pct*100:.2f}%",
+                        equity=equity,
+                        drawdown_pct=drawdown * 100,
+                    )
+                except Exception:
+                    pass
                 return RiskVerdict(False, f"Daily drawdown limit hit ({drawdown*100:.2f}%). Agent shut down.")
 
         # HOLD passes through

@@ -21,6 +21,12 @@ from storage.trade_store import TradeStore
 from storage.research_store import ResearchStore
 from data.massive_indicators import MassiveIndicatorFetcher
 from data.earnings_calendar import EarningsCalendar
+try:
+    from notifier import notify_startup, notify_shutdown
+    _NOTIFY = True
+except ImportError as _e:
+    logger.warning("notifier.py not found -- push notifications disabled: %s", _e)
+    _NOTIFY = False
 from data.clinical_catalyst_calendar import ClinicalCatalystCalendar
 
 # Logging setup
@@ -746,6 +752,18 @@ def main():
     except Exception as e:
         logger.warning("Could not fetch initial equity for risk reset: %s", e)
 
+    if _NOTIFY:
+        ok = notify_startup(
+            paper=config.alpaca.paper,
+            symbols=len(config.watchlist.stocks),
+        )
+        if ok:
+            logger.info("Startup notification sent via ntfy.sh")
+        else:
+            logger.warning(
+                "Startup notification failed -- check NTFY_TOPIC env var is set"
+            )
+
     running = True
 
     def _shutdown(sig, frame):
@@ -771,6 +789,12 @@ def main():
     store.close()
     research_store.close()
     logger.info("Trading agent shut down cleanly.")
+    if _NOTIFY:
+        ok = notify_shutdown(paper=config.alpaca.paper)
+        if ok:
+            logger.info("Shutdown notification sent via ntfy.sh")
+        else:
+            logger.warning("Shutdown notification failed")
 
 
 if __name__ == "__main__":

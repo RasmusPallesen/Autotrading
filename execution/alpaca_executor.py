@@ -10,7 +10,14 @@ Error handling improvements:
 """
 
 import logging
+import os
 from typing import Optional
+
+try:
+    from notifier import notify_buy, notify_sell, notify_pdt_block
+    _NOTIFY = True
+except ImportError:
+    _NOTIFY = False
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +82,8 @@ class AlpacaExecutor:
                 config.api_key, config.secret_key, paper=config.paper
             )
             self.paper = config.paper
-            self._pdt_blocked = False  # Set True if PDT error fires — suppresses further sells this session
+            self._pdt_blocked = False
+            self._notify = _NOTIFY  # Set True if PDT error fires — suppresses further sells this session
             logger.info("AlpacaExecutor initialised (paper=%s)", config.paper)
         except ImportError:
             raise ImportError("Install alpaca-py: pip install alpaca-py")
@@ -108,7 +116,7 @@ class AlpacaExecutor:
                 "BUY %s | notional=$%.2f | order_id=%s | paper=%s",
                 symbol, notional, order.id, self.paper,
             )
-            return {
+            result = {
                 "order_id": str(order.id),
                 "symbol": symbol,
                 "side": "BUY",
@@ -116,6 +124,18 @@ class AlpacaExecutor:
                 "stop_loss": stop_loss_price,
                 "take_profit": take_profit_price,
             }
+            if self._notify:
+                notify_buy(
+                    symbol=symbol,
+                    notional=notional,
+                    confidence=0.0,   # Caller patches this via _last_decision if needed
+                    urgency="MEDIUM",
+                    rationale="",
+                    stop_loss=stop_loss_price,
+                    take_profit=take_profit_price,
+                    paper=self.paper,
+                )
+            return result
 
         except Exception as e:
             error = _parse_alpaca_error(e)
@@ -129,6 +149,8 @@ class AlpacaExecutor:
                         "Consider switching to a cash account or raising account equity above $25,000.",
                         symbol, error.code,
                     )
+                    if self._notify:
+                        notify_pdt_block(symbol=symbol, paper=self.paper)
                 elif error.is_insufficient_funds:
                     logger.error(
                         "BUY %s BLOCKED -- Insufficient buying power (code=%d): %s",
@@ -158,12 +180,21 @@ class AlpacaExecutor:
             if close_all:
                 response = self.client.close_position(symbol)
                 logger.info("CLOSE POSITION %s | paper=%s", symbol, self.paper)
-                return {
+                result = {
                     "order_id": str(response.id),
                     "symbol": symbol,
                     "side": "SELL",
                     "close_all": True,
                 }
+                if self._notify:
+                    notify_sell(
+                        symbol=symbol,
+                        notional=0.0,   # Caller patches notional after position lookup
+                        confidence=0.0,
+                        urgency="MEDIUM",
+                        paper=self.paper,
+                    )
+                return result
 
             if qty is None:
                 raise ValueError("Must specify qty or close_all=True")
@@ -198,6 +229,8 @@ class AlpacaExecutor:
                         "protect the position. Agent will not retry this sell today.",
                         symbol, error.code,
                     )
+                    if self._notify:
+                        notify_pdt_block(symbol=symbol, paper=self.paper)
                 elif error.is_position_not_found:
                     logger.warning(
                         "SELL %s -- Position not found (code=%d). "
