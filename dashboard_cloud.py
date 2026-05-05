@@ -248,6 +248,87 @@ st.markdown("""
     #MainMenu { visibility: hidden; }
     footer    { visibility: hidden; }
     header    { visibility: hidden; }
+
+    /* ── Detail panel ─────────────────────────────────────────────── */
+    .detail-panel {
+        background: #111827;
+        border: 1px solid #374151;
+        border-radius: 12px;
+        padding: 16px;
+        margin: -4px 0 10px 0;
+        animation: slideDown 0.15s ease;
+    }
+    @keyframes slideDown {
+        from { opacity: 0; transform: translateY(-6px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .detail-title {
+        font-size: 11px;
+        font-weight: 700;
+        color: #6b7280;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin: 12px 0 6px 0;
+    }
+    .detail-title:first-child { margin-top: 0; }
+    .detail-body { font-size: 13px; color: #d1d5db; line-height: 1.6; }
+    .detail-point {
+        display: flex;
+        gap: 8px;
+        padding: 5px 0;
+        border-bottom: 1px solid #1f2937;
+        font-size: 12px;
+        color: #d1d5db;
+        line-height: 1.4;
+    }
+    .detail-point:last-child { border-bottom: none; }
+    .detail-point-icon { flex-shrink: 0; color: #4b5563; }
+    .detail-risk {
+        display: flex;
+        gap: 8px;
+        padding: 5px 0;
+        border-bottom: 1px solid #1f2937;
+        font-size: 12px;
+        color: #fca5a5;
+        line-height: 1.4;
+    }
+    .detail-risk:last-child { border-bottom: none; }
+    .detail-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #60a5fa;
+        text-decoration: none;
+        margin-top: 10px;
+        padding: 6px 0;
+    }
+
+    /* Tap-to-expand button style */
+    div[data-testid="stButton"] button {
+        width: 100%;
+        background: transparent;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+        text-align: left;
+    }
+    div[data-testid="stButton"] button:hover {
+        background: transparent;
+        border: none;
+    }
+    div[data-testid="stButton"] button p {
+        margin: 0;
+    }
+    /* Hide button text — card tap area is visual affordance */
+    div[data-testid="stButton"] button[title] {
+        height: 0;
+        overflow: hidden;
+        padding: 0;
+        margin: -8px 0 4px 0;
+        opacity: 0;
+        font-size: 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -355,7 +436,7 @@ def load_executions() -> pd.DataFrame:
 
 def load_research() -> pd.DataFrame:
     df = query("""
-        SELECT symbol, sentiment, conviction, recommended_action, summary, ts
+        SELECT symbol, sentiment, conviction, recommended_action, summary, key_points, risk_factors, sources_used, ts
         FROM research_signals
         WHERE expires_at > current_timestamp
         AND id IN (SELECT MAX(id) FROM research_signals
@@ -371,7 +452,7 @@ def load_research() -> pd.DataFrame:
 
 def load_scanner() -> pd.DataFrame:
     df = query("""
-        SELECT symbol, sentiment, conviction, recommended_action, summary, ts
+        SELECT symbol, sentiment, conviction, recommended_action, summary, key_points, risk_factors, sources_used, ts
         FROM research_signals
         WHERE expires_at > current_timestamp
         AND (LOWER(summary) LIKE '%gainer%' OR LOWER(summary) LIKE '%surge%'
@@ -390,7 +471,7 @@ def load_scanner() -> pd.DataFrame:
 
 def load_iv_signals() -> pd.DataFrame:
     df = query("""
-        SELECT symbol, sentiment, conviction, recommended_action, summary, ts
+        SELECT symbol, sentiment, conviction, recommended_action, summary, key_points, risk_factors, sources_used, ts
         FROM research_signals
         WHERE LOWER(summary) LIKE '%iv spike%'
         AND expires_at > current_timestamp
@@ -407,7 +488,7 @@ def load_iv_signals() -> pd.DataFrame:
 
 def load_insider_signals() -> pd.DataFrame:
     df = query("""
-        SELECT symbol, sentiment, conviction, recommended_action, summary, ts
+        SELECT symbol, sentiment, conviction, recommended_action, summary, key_points, risk_factors, sources_used, ts
         FROM research_signals
         WHERE LOWER(summary) LIKE '%insider%'
         AND expires_at > current_timestamp
@@ -444,6 +525,95 @@ def action_rec_badge(a):
 
 def pnl_color(val: float) -> str:
     return "#22c55e" if val >= 0 else "#ef4444"
+
+
+# ── Session state for tappable cards ─────────────────────────────────────────
+import json as _json
+
+if "selected" not in st.session_state:
+    st.session_state.selected = None   # Format: "section:symbol_or_idx"
+
+def _toggle(key: str):
+    """Toggle detail panel open/closed."""
+    if st.session_state.selected == key:
+        st.session_state.selected = None
+    else:
+        st.session_state.selected = key
+
+def _parse_kp(raw) -> list:
+    """Parse key_points/risk_factors JSON string from DB."""
+    if not raw or str(raw) in ("None", "nan", ""):
+        return []
+    try:
+        return _json.loads(str(raw))
+    except Exception:
+        return []
+
+def _detail_panel(row: dict, section: str):
+    """Render the expandable detail panel for a research/scanner/decision card."""
+    summary     = str(row.get("summary", ""))
+    key_points  = _parse_kp(row.get("key_points"))
+    risk_factors= _parse_kp(row.get("risk_factors"))
+    sources     = row.get("sources_used", "")
+    symbol      = str(row.get("symbol", ""))
+    rationale   = str(row.get("rationale", ""))
+    approval    = str(row.get("approval_reason", ""))
+    ts          = row.get("ts", "")
+    ts_str      = ts.strftime("%d %b %Y %H:%M") if hasattr(ts, "strftime") else str(ts)
+
+    kp_html = "".join(
+        f'<div class="detail-point"><span class="detail-point-icon">›</span>{p}</div>'
+        for p in key_points
+    ) if key_points else ""
+
+    rf_html = "".join(
+        f'<div class="detail-risk"><span class="detail-point-icon">⚠</span>{r}</div>'
+        for r in risk_factors
+    ) if risk_factors else ""
+
+    # Use rationale for decisions (no summary), summary for research
+    body_text = rationale if rationale and rationale not in ("None","nan","") else summary
+
+    html = f'''<div class="detail-panel">'''
+
+    if body_text and body_text not in ("None","nan",""):
+        html += f'''
+        <div class="detail-title">Analysis</div>
+        <div class="detail-body">{body_text}</div>'''
+
+    if kp_html:
+        html += f'''
+        <div class="detail-title">Key Findings</div>
+        {kp_html}'''
+
+    if rf_html:
+        html += f'''
+        <div class="detail-title">Risk Factors</div>
+        {rf_html}'''
+
+    if approval and approval not in ("None","nan",""):
+        html += f'''
+        <div class="detail-title">Risk Verdict</div>
+        <div class="detail-body">{approval}</div>'''
+
+    meta_parts = []
+    if ts_str:
+        meta_parts.append(ts_str)
+    if sources:
+        meta_parts.append(f"{sources} sources")
+    if meta_parts:
+        html += f'''
+        <div class="detail-title">Meta</div>
+        <div class="detail-body" style="color:#6b7280;">{" · ".join(str(m) for m in meta_parts)}</div>'''
+
+    if symbol:
+        html += f'''
+        <a class="detail-link" href="https://finance.yahoo.com/quote/{symbol}" target="_blank">
+            View {symbol} on Yahoo Finance →
+        </a>'''
+
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -526,45 +696,43 @@ st.markdown(f"""
 scanner = load_scanner()
 if not scanner.empty:
     items_html = ""
-    for _, row in scanner.head(4).iterrows():
-        sc_cls = {"BULLISH": "badge-bull", "BEARISH": "badge-bear"}.get(row["sentiment"], "badge-neutral")
-        ac_cls = {"BUY": "badge-buy", "SELL": "badge-sell"}.get(row["recommended_action"], "badge-hold")
-        items_html += f"""
-        <div class="scanner-card">
-            <div class="scanner-sym">{row["symbol"]}</div>
-            <div class="card-badges" style="margin-top:5px;">
-                <span class="badge {sc_cls}">{row["sentiment"]}</span>
-                <span class="badge {ac_cls}">{row["recommended_action"]}</span>
-                <span class="badge badge-pct">{row["conviction_pct"]}%</span>
-            </div>
-            <div class="scanner-text">{str(row["summary"])[:120]}</div>
-        </div>"""
-
-    st.markdown(f"""
+    st.markdown("""
     <div class="scanner-banner">
         <div class="scanner-title">
             ⚡ Scanner Discoveries
             <span class="scanner-live">LIVE</span>
         </div>
-        <div class="scanner-grid">{items_html}</div>
     </div>
     """, unsafe_allow_html=True)
 
-    if len(scanner) > 4:
-        with st.expander(f"Show all {len(scanner)} scanner hits"):
-            for _, row in scanner.iloc[4:].iterrows():
-                sc_cls = {"BULLISH": "badge-bull", "BEARISH": "badge-bear"}.get(row["sentiment"], "badge-neutral")
-                st.markdown(f"""
-                <div class="card" style="margin-bottom:6px;">
-                    <div class="card-header">
-                        <span class="card-symbol">{row["symbol"]}</span>
-                        <div class="card-badges">
-                            <span class="badge {sc_cls}">{row["sentiment"]}</span>
-                            <span class="badge badge-pct">{row["conviction_pct"]}%</span>
-                        </div>
-                    </div>
-                    <div class="card-text">{str(row["summary"])[:200]}</div>
-                </div>""", unsafe_allow_html=True)
+    show_all_scanner = st.toggle("Show all scanner hits", value=False, key="scanner_all")
+    scan_rows = scanner if show_all_scanner else scanner.head(4)
+
+    for idx, row in scan_rows.iterrows():
+        sc_cls = {"BULLISH": "badge-bull", "BEARISH": "badge-bear"}.get(row["sentiment"], "badge-neutral")
+        ac_cls = {"BUY": "badge-buy", "SELL": "badge-sell"}.get(row["recommended_action"], "badge-hold")
+        key    = f"scanner:{row['symbol']}"
+        is_open = st.session_state.selected == key
+        expand_icon = "▲" if is_open else "▼"
+
+        st.markdown(f"""
+        <div class="card" style="margin-bottom:2px;">
+            <div class="card-header">
+                <span class="card-symbol" style="color:#f59e0b;">{row["symbol"]}</span>
+                <div class="card-badges">
+                    <span class="badge {sc_cls}">{row["sentiment"]}</span>
+                    <span class="badge {ac_cls}">{row["recommended_action"]}</span>
+                    <span class="badge badge-pct">{row["conviction_pct"]}%</span>
+                    <span style="font-size:10px;color:#4b5563;padding-left:4px;">{expand_icon}</span>
+                </div>
+            </div>
+            <div class="scanner-text">{str(row["summary"])[:100]}</div>
+        </div>""", unsafe_allow_html=True)
+
+        if st.button("Tap for details", key=f"btn_{key}", help=f"See full analysis for {row['symbol']}"):
+            _toggle(key)
+        if is_open:
+            _detail_panel(row.to_dict(), "scanner")
 
 
 # ── Portfolio KPIs ─────────────────────────────────────────────────────────────
@@ -707,21 +875,32 @@ if not decisions.empty:
             vals = ([1] if "Yes" in approved_f else []) + ([0] if "No" in approved_f else [])
             f = f[f["approved"].isin(vals)]
 
-        for _, row in f.head(30).iterrows():
-            ab  = action_badge(row["action"])
-            ub  = urgency_badge(row.get("urgency", "LOW"))
-            apb = approved_badge(row["approved"])
-            ts  = row["ts"].strftime("%d/%m %H:%M")
+        for idx, row in enumerate(f.head(30).itertuples()):
+            ab  = action_badge(row.action)
+            ub  = urgency_badge(getattr(row, "urgency", "LOW"))
+            apb = approved_badge(row.approved)
+            ts  = row.ts.strftime("%d/%m %H:%M")
+            key = f"decision:{row.symbol}:{idx}"
+            is_open = st.session_state.selected == key
+            expand_icon = "▲" if is_open else "▼"
+
             st.markdown(f"""
-            <div class="card">
+            <div class="card" style="margin-bottom:2px;">
                 <div class="card-header">
-                    <span class="card-symbol">{row["symbol"]}</span>
-                    <div class="card-badges">{ab} {ub} {apb}</div>
+                    <span class="card-symbol">{row.symbol}</span>
+                    <div class="card-badges">{ab} {ub} {apb}
+                        <span style="font-size:10px;color:#4b5563;padding-left:4px;">{expand_icon}</span>
+                    </div>
                 </div>
-                <div class="card-meta">{ts} · {row["confidence_pct"]:.0f}% confidence</div>
-                <div class="card-text">{str(row.get("rationale",""))[:200]}</div>
-                {"" if not row.get("approval_reason") else f'<div class="card-note">{str(row["approval_reason"])[:150]}</div>'}
+                <div class="card-meta">{ts} · {row.confidence_pct:.0f}% confidence</div>
+                <div class="card-text">{str(getattr(row,"rationale",""))[:160]}</div>
             </div>""", unsafe_allow_html=True)
+
+            if st.button("Tap for details", key=f"btn_{key}"):
+                _toggle(key)
+            if is_open:
+                row_dict = {c: getattr(row, c, None) for c in f.columns}
+                _detail_panel(row_dict, "decision")
 
 # ── Executions ─────────────────────────────────────────────────────────────────
 if not executions.empty:
@@ -794,21 +973,31 @@ research = load_research()
 if research.empty:
     st.info("No active research signals.")
 else:
-    for _, row in research.iterrows():
+    for idx, row in research.iterrows():
         sc_cls = {"BULLISH": "badge-bull", "BEARISH": "badge-bear", "NEUTRAL": "badge-neutral"}.get(row["sentiment"], "badge-neutral")
         ac_cls = {"BUY": "badge-buy", "SELL": "badge-sell", "HOLD": "badge-hold", "WATCH": "badge-watch"}.get(row["recommended_action"], "badge-hold")
+        key    = f"research:{row['symbol']}"
+        is_open = st.session_state.selected == key
+        expand_icon = "▲" if is_open else "▼"
+
         st.markdown(f"""
-        <div class="card">
+        <div class="card" style="margin-bottom:2px;">
             <div class="card-header">
                 <span class="card-symbol">{row["symbol"]}</span>
                 <div class="card-badges">
                     <span class="badge {sc_cls}">{row["sentiment"]}</span>
                     <span class="badge {ac_cls}">{row["recommended_action"]}</span>
                     <span class="badge badge-pct">{row["conviction_pct"]}%</span>
+                    <span style="font-size:10px;color:#4b5563;padding-left:4px;">{expand_icon}</span>
                 </div>
             </div>
-            <div class="card-text">{row["summary"][:250]}</div>
+            <div class="card-text">{str(row["summary"])[:160]}</div>
         </div>""", unsafe_allow_html=True)
+
+        if st.button("Tap for details", key=f"btn_{key}"):
+            _toggle(key)
+        if is_open:
+            _detail_panel(row.to_dict(), "research")
 
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
