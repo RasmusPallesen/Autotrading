@@ -305,27 +305,30 @@ st.markdown("""
     }
 
     /* Tap-to-expand button style */
-    /* Hide the checkbox widget — card ▲▼ icon is the visual affordance.
-       The checkbox still works for click/tap detection via on_change callback. */
-    div[data-testid="stCheckbox"] {
-        height: 0;
-        overflow: hidden;
-        margin: -6px 0 2px 0;
-        opacity: 0;
-        pointer-events: none;
-        position: relative;
-        z-index: 10;
+    /* ── Expand/collapse card buttons ─────────────────────────────── */
+    div[data-testid="stButton"] > button {
+        background: #111827 !important;
+        border: 1px solid #1f2937 !important;
+        border-top: none !important;
+        border-radius: 0 0 10px 10px !important;
+        color: #4b5563 !important;
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.05em !important;
+        padding: 6px 12px !important;
+        margin-top: -2px !important;
+        margin-bottom: 8px !important;
+        width: 100% !important;
+        text-align: center !important;
+        min-height: 36px !important;
+        cursor: pointer !important;
+        transition: background 0.1s ease !important;
     }
-    /* Re-enable pointer events on the actual input for tap detection */
-    div[data-testid="stCheckbox"] input {
-        pointer-events: all;
-        opacity: 0;
-        width: 100%;
-        height: 44px;  /* iOS minimum tap target */
-        position: absolute;
-        top: -40px;
-        left: 0;
-        cursor: pointer;
+    div[data-testid="stButton"] > button:hover,
+    div[data-testid="stButton"] > button:focus {
+        background: #1f2937 !important;
+        color: #9ca3af !important;
+        border-color: #374151 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -532,32 +535,21 @@ if "selected" not in st.session_state:
     st.session_state.selected = None   # Format: "section:symbol_or_idx"
 
 def _toggle(key: str):
-    """Toggle detail panel — used as on_change callback for checkboxes."""
-    # Checkbox value is read from session_state directly via the widget key
-    cb_key = f"cb_{key}"
-    if st.session_state.get(cb_key, False):
-        st.session_state.selected = key
-    else:
+    """Toggle detail panel open/closed."""
+    if st.session_state.selected == key:
         st.session_state.selected = None
+    else:
+        st.session_state.selected = key
 
-def _card_button(key: str, symbol: str):
+def _card_button(key: str, symbol: str, is_open: bool):
     """
-    Render an invisible checkbox that acts as the tap target.
-    Using checkbox instead of button avoids Streamlit's button-bleeding bug
-    where clicks on any card trigger the first card's state.
-    The checkbox is hidden via CSS and the ▲▼ icon in the card is the visual cue.
+    Render a visible expand/collapse button below each card.
+    Key must be globally unique (includes section + symbol + row index)
+    so Streamlit never confuses two buttons.
     """
-    cb_key = f"cb_{key}"
-    # Sync checkbox value with selected state
-    current_val = st.session_state.selected == key
-    st.checkbox(
-        label=f"Details for {symbol}",
-        value=current_val,
-        key=cb_key,
-        on_change=_toggle,
-        args=(key,),
-        label_visibility="collapsed",
-    )
+    label = f"▲ Collapse {symbol}" if is_open else f"▼ Details"
+    if st.button(label, key=f"btn_{key}", use_container_width=True):
+        _toggle(key)
 
 def _parse_kp(raw) -> list:
     """Parse key_points/risk_factors JSON string from DB."""
@@ -727,12 +719,12 @@ if not scanner.empty:
     show_all_scanner = st.toggle("Show all scanner hits", value=False, key="scanner_all")
     scan_rows = scanner if show_all_scanner else scanner.head(4)
 
-    for idx, row in scan_rows.iterrows():
+    for idx, row in enumerate(scan_rows.itertuples()):
+        row = scan_rows.iloc[idx]
         sc_cls = {"BULLISH": "badge-bull", "BEARISH": "badge-bear"}.get(row["sentiment"], "badge-neutral")
         ac_cls = {"BUY": "badge-buy", "SELL": "badge-sell"}.get(row["recommended_action"], "badge-hold")
-        key    = f"scanner:{row['symbol']}"
+        key    = f"scanner:{row['symbol']}:{idx}"
         is_open = st.session_state.selected == key
-        expand_icon = "▲" if is_open else "▼"
 
         st.markdown(f"""
         <div class="card" style="margin-bottom:2px;">
@@ -742,13 +734,12 @@ if not scanner.empty:
                     <span class="badge {sc_cls}">{row["sentiment"]}</span>
                     <span class="badge {ac_cls}">{row["recommended_action"]}</span>
                     <span class="badge badge-pct">{row["conviction_pct"]}%</span>
-                    <span style="font-size:10px;color:#4b5563;padding-left:4px;">{expand_icon}</span>
                 </div>
             </div>
             <div class="scanner-text">{str(row["summary"])[:100]}</div>
         </div>""", unsafe_allow_html=True)
 
-        _card_button(key, row['symbol'])
+        _card_button(key, row['symbol'], is_open)
         if is_open:
             _detail_panel(row.to_dict(), "scanner")
 
@@ -900,21 +891,19 @@ if not decisions.empty:
             ts  = row.ts.strftime("%d/%m %H:%M")
             key = f"decision:{row.symbol}:{idx}"
             is_open = st.session_state.selected == key
-            expand_icon = "▲" if is_open else "▼"
 
             st.markdown(f"""
             <div class="card" style="margin-bottom:2px;">
                 <div class="card-header">
                     <span class="card-symbol">{row.symbol}</span>
                     <div class="card-badges">{ab} {ub} {apb}
-                        <span style="font-size:10px;color:#4b5563;padding-left:4px;">{expand_icon}</span>
-                    </div>
+                        </div>
                 </div>
                 <div class="card-meta">{ts} · {row.confidence_pct:.0f}% confidence</div>
                 <div class="card-text">{str(getattr(row,"rationale",""))[:160]}</div>
             </div>""", unsafe_allow_html=True)
 
-            _card_button(key, row.symbol)
+            _card_button(key, row.symbol, is_open)
             if is_open:
                 row_dict = {c: getattr(row, c, None) for c in f.columns}
                 _detail_panel(row_dict, "decision")
@@ -990,12 +979,12 @@ research = load_research()
 if research.empty:
     st.info("No active research signals.")
 else:
-    for idx, row in research.iterrows():
+    for idx, row in enumerate(research.itertuples()):
+        row = research.iloc[idx]
         sc_cls = {"BULLISH": "badge-bull", "BEARISH": "badge-bear", "NEUTRAL": "badge-neutral"}.get(row["sentiment"], "badge-neutral")
         ac_cls = {"BUY": "badge-buy", "SELL": "badge-sell", "HOLD": "badge-hold", "WATCH": "badge-watch"}.get(row["recommended_action"], "badge-hold")
-        key    = f"research:{row['symbol']}"
+        key    = f"research:{row['symbol']}:{idx}"
         is_open = st.session_state.selected == key
-        expand_icon = "▲" if is_open else "▼"
 
         st.markdown(f"""
         <div class="card" style="margin-bottom:2px;">
@@ -1005,13 +994,12 @@ else:
                     <span class="badge {sc_cls}">{row["sentiment"]}</span>
                     <span class="badge {ac_cls}">{row["recommended_action"]}</span>
                     <span class="badge badge-pct">{row["conviction_pct"]}%</span>
-                    <span style="font-size:10px;color:#4b5563;padding-left:4px;">{expand_icon}</span>
                 </div>
             </div>
             <div class="card-text">{str(row["summary"])[:160]}</div>
         </div>""", unsafe_allow_html=True)
 
-        _card_button(key, row['symbol'])
+        _card_button(key, row['symbol'], is_open)
         if is_open:
             _detail_panel(row.to_dict(), "research")
 
