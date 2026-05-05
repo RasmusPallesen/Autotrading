@@ -305,29 +305,27 @@ st.markdown("""
     }
 
     /* Tap-to-expand button style */
-    div[data-testid="stButton"] button {
-        width: 100%;
-        background: transparent;
-        border: none;
-        padding: 0;
-        cursor: pointer;
-        text-align: left;
-    }
-    div[data-testid="stButton"] button:hover {
-        background: transparent;
-        border: none;
-    }
-    div[data-testid="stButton"] button p {
-        margin: 0;
-    }
-    /* Hide button text — card tap area is visual affordance */
-    div[data-testid="stButton"] button[title] {
+    /* Hide the checkbox widget — card ▲▼ icon is the visual affordance.
+       The checkbox still works for click/tap detection via on_change callback. */
+    div[data-testid="stCheckbox"] {
         height: 0;
         overflow: hidden;
-        padding: 0;
-        margin: -8px 0 4px 0;
+        margin: -6px 0 2px 0;
         opacity: 0;
-        font-size: 0;
+        pointer-events: none;
+        position: relative;
+        z-index: 10;
+    }
+    /* Re-enable pointer events on the actual input for tap detection */
+    div[data-testid="stCheckbox"] input {
+        pointer-events: all;
+        opacity: 0;
+        width: 100%;
+        height: 44px;  /* iOS minimum tap target */
+        position: absolute;
+        top: -40px;
+        left: 0;
+        cursor: pointer;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -534,11 +532,32 @@ if "selected" not in st.session_state:
     st.session_state.selected = None   # Format: "section:symbol_or_idx"
 
 def _toggle(key: str):
-    """Toggle detail panel open/closed."""
-    if st.session_state.selected == key:
-        st.session_state.selected = None
-    else:
+    """Toggle detail panel — used as on_change callback for checkboxes."""
+    # Checkbox value is read from session_state directly via the widget key
+    cb_key = f"cb_{key}"
+    if st.session_state.get(cb_key, False):
         st.session_state.selected = key
+    else:
+        st.session_state.selected = None
+
+def _card_button(key: str, symbol: str):
+    """
+    Render an invisible checkbox that acts as the tap target.
+    Using checkbox instead of button avoids Streamlit's button-bleeding bug
+    where clicks on any card trigger the first card's state.
+    The checkbox is hidden via CSS and the ▲▼ icon in the card is the visual cue.
+    """
+    cb_key = f"cb_{key}"
+    # Sync checkbox value with selected state
+    current_val = st.session_state.selected == key
+    st.checkbox(
+        label=f"Details for {symbol}",
+        value=current_val,
+        key=cb_key,
+        on_change=_toggle,
+        args=(key,),
+        label_visibility="collapsed",
+    )
 
 def _parse_kp(raw) -> list:
     """Parse key_points/risk_factors JSON string from DB."""
@@ -729,8 +748,7 @@ if not scanner.empty:
             <div class="scanner-text">{str(row["summary"])[:100]}</div>
         </div>""", unsafe_allow_html=True)
 
-        if st.button("Tap for details", key=f"btn_{key}", help=f"See full analysis for {row['symbol']}"):
-            _toggle(key)
+        _card_button(key, row['symbol'])
         if is_open:
             _detail_panel(row.to_dict(), "scanner")
 
@@ -896,8 +914,7 @@ if not decisions.empty:
                 <div class="card-text">{str(getattr(row,"rationale",""))[:160]}</div>
             </div>""", unsafe_allow_html=True)
 
-            if st.button("Tap for details", key=f"btn_{key}"):
-                _toggle(key)
+            _card_button(key, row.symbol)
             if is_open:
                 row_dict = {c: getattr(row, c, None) for c in f.columns}
                 _detail_panel(row_dict, "decision")
@@ -994,8 +1011,7 @@ else:
             <div class="card-text">{str(row["summary"])[:160]}</div>
         </div>""", unsafe_allow_html=True)
 
-        if st.button("Tap for details", key=f"btn_{key}"):
-            _toggle(key)
+        _card_button(key, row['symbol'])
         if is_open:
             _detail_panel(row.to_dict(), "research")
 
