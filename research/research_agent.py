@@ -31,6 +31,8 @@ from data.earnings_calendar import EarningsCalendar
 from data.insider_monitor import InsiderMonitor
 from data.iv_monitor import IVMonitor
 from data.motley_fool_fetcher import fetch_motley_fool
+from data.breakout_screener import BreakoutScreener
+from data.institutional_monitor import InstitutionalMonitor, get_ticker_cik_map
 from data.clinical_catalyst_calendar import ClinicalCatalystCalendar
 
 logging.basicConfig(
@@ -244,7 +246,7 @@ def _fetch_motley_fool_cached(symbols: list) -> list:
 
 # ── Main research cycle ────────────────────────────────────────────────────────
 
-def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, clinical_cal=None):
+def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, clinical_cal=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None):
     logger.info("=== Research cycle starting ===")
 
     base_symbols = config.watchlist.all_symbols
@@ -418,6 +420,51 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         except Exception as e:
             logger.warning("Insider monitor error: %s", e)
 
+    # Institutional filings (13-D, 13-G, 13-F new positions)
+    # Caching: seen accessions never re-fetched (disk-backed).
+    # 13-F delta: only fires for positions NEW vs prior quarter.
+    # Runs every cycle but does almost no work when cache is warm.
+    institutional_items = []
+    if institutional_monitor:
+        try:
+            ticker_cik = get_ticker_cik_map(all_symbols)
+            inst_signals = institutional_monitor.get_signals(
+                symbols=all_symbols,
+                ticker_map=ticker_cik,
+                days_back=90,
+            )
+            for sig in inst_signals:
+                urgency_tag = f"|{sig.urgency}" if sig.urgency != "LOW" else ""
+                institutional_items.append(ResearchItem(
+                    source="institutional",
+                    symbol=sig.symbol,
+                    title=(
+                        f"[INSTITUTIONAL|{sig.form_type}{urgency_tag}] "
+                        f"{sig.filer_name} — {sig.form_type} on {sig.symbol}"
+                    ),
+                    summary=sig.to_research_summary(),
+                    url=sig.url,
+                    published_at=datetime.now(timezone.utc),
+                    raw={
+                        "form_type": sig.form_type,
+                        "filer": sig.filer_name,
+                        "filer_cik": sig.filer_cik,
+                        "ownership_pct": sig.ownership_pct,
+                        "shares_held": sig.shares_held,
+                        "market_value": sig.market_value,
+                        "is_new": sig.is_new_position,
+                        "is_activist": sig.is_activist,
+                        "urgency": sig.urgency,
+                    },
+                ))
+                if sig.form_type == "13-D":
+                    logger.warning(
+                        "ACTIVIST 13-D: %s filed on %s -- potential catalyst",
+                        sig.filer_name, sig.symbol,
+                    )
+        except Exception as e:
+            logger.warning("Institutional monitor error: %s", e)
+
     # News, SEC, Reddit — no caching here (freshness matters)
     news_items = fetch_news(
         all_symbols,
@@ -444,6 +491,63 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         logger.warning("Motley Fool fetcher error: %s", e)
         fool_items = []
 
+    # Pre-breakout screener — detects accumulation BEFORE the price move.
+    # Runs on 1-min bars already fetched for this cycle (no extra API cost).
+    # Symbols flagged here get [PRE-BREAKOUT] ResearchItems flowing to Claude,
+    # which writes them to research_signals so the trading agent is primed.
+    breakout_items = []
+    if breakout_screener and is_market_open():
+        try:
+            # Fetch fresh 1-min bars for all symbols
+            from data.alpaca_fetcher import AlpacaDataFetcher
+            _fetcher = AlpacaDataFetcher(alpaca_config) if alpaca_config else None
+            bars_1min = {}
+            if _fetcher:
+                bars_1min = _fetcher.get_bars(
+                    symbols=all_symbols,
+                    lookback_bars=50,
+                    timeframe="1Min",
+                )
+
+            breakout_signals = breakout_screener.scan(
+                symbols=all_symbols,
+                bars_1min=bars_1min,
+                research_signals={s: research_signals.get(s, {}) for s in all_symbols},
+                alpaca_config=alpaca_config,
+            )
+
+            for sig in breakout_signals:
+                logger.info(
+                    "[PRE-BREAKOUT] %s score=%d signals=%s",
+                    sig.symbol, sig.score, sig.signals,
+                )
+                breakout_items.append(ResearchItem(
+                    source="breakout_screener",
+                    symbol=sig.symbol,
+                    title=(
+                        f"[PRE-BREAKOUT|score={sig.score}] {sig.symbol}: "
+                        f"{' + '.join(sig.signals)}"
+                    ),
+                    summary=sig.to_research_summary(),
+                    url=f"https://finance.yahoo.com/quote/{sig.symbol}",
+                    published_at=datetime.now(timezone.utc),
+                    raw={
+                        "score": sig.score,
+                        "signals": sig.signals,
+                        "volume_ratio": sig.volume_ratio,
+                        "rsi": sig.rsi,
+                        "bb_width_pct": sig.bb_width_pct,
+                        "near_52w_low": sig.near_52w_low,
+                        "has_insider": sig.has_insider_signal,
+                        "price_change_1h": sig.price_change_1h,
+                    },
+                ))
+        except Exception as e:
+            logger.warning("Breakout screener error: %s", e)
+    elif not is_market_open():
+        logger.debug("Breakout screener skipped -- market closed")
+
+    # Clinical catalyst monitor
     # Clinical catalyst monitor — FDA/Phase 3/PDUFA dates for biotech symbols
     # Cached 12h inside ClinicalCatalystCalendar. Generates ResearchItems so
     # Claude treats upcoming readouts as high-risk context in its analysis.
@@ -502,14 +606,17 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
 
     all_items = (
         news_items + sec_items + reddit_items +
-        scanner_items + insider_items + iv_items + fool_items + clinical_items
+        scanner_items + insider_items + iv_items + fool_items +
+        clinical_items + breakout_items + institutional_items
     )
     logger.info(
         "Collected %d items -- news=%d, SEC=%d, Reddit=%d, "
-        "Scanner=%d, Insider=%d, IV=%d, MotleyFool=%d, Clinical=%d",
+        "Scanner=%d, Insider=%d, IV=%d, MotleyFool=%d, "
+        "Clinical=%d, Breakout=%d, Institutional=%d",
         len(all_items), len(news_items), len(sec_items),
         len(reddit_items), len(scanner_items), len(insider_items),
         len(iv_items), len(fool_items), len(clinical_items),
+        len(breakout_items), len(institutional_items),
     )
 
     if not all_items:
@@ -575,6 +682,8 @@ def main():
 
     analyst         = ResearchAnalyst(config.anthropic)
     store           = ResearchStore()
+    breakout_screener       = BreakoutScreener()
+    institutional_monitor   = InstitutionalMonitor()
     earnings_cal    = EarningsCalendar()
     insider_monitor = InsiderMonitor()
     iv_monitor      = IVMonitor()
@@ -601,6 +710,9 @@ def main():
                 analyst, store, scanner,
                 earnings_cal, insider_monitor, iv_monitor,
                 clinical_cal=clinical_cal,
+                breakout_screener=breakout_screener,
+                alpaca_config=config.alpaca,
+                institutional_monitor=institutional_monitor,
             )
         except Exception as e:
             logger.exception("Unhandled error in research cycle: %s", e)
