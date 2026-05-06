@@ -473,6 +473,41 @@ def run_loop(
         except Exception as e:
             logger.warning("Earnings calendar error: %s", e)
 
+    # 7. Pre-flight check — skip symbols where notional < $10 regardless of cash.
+    # Avoids wasting Claude API calls on positions the risk manager will block anyway.
+    min_notional = 10.0
+    tradeable_snapshots = []
+    skipped_low_equity = []
+    for snap in snapshots:
+        max_notional = portfolio["equity"] * config.risk.max_position_pct
+        if max_notional < min_notional:
+            skipped_low_equity.append(snap.symbol)
+        else:
+            tradeable_snapshots.append(snap)
+
+    if skipped_low_equity:
+        logger.warning(
+            "Skipping %d symbols — equity too low for minimum trade "
+            "(equity=$%.2f x %.0f%% = $%.2f < $%.0f): %s",
+            len(skipped_low_equity),
+            portfolio["equity"],
+            config.risk.max_position_pct * 100,
+            portfolio["equity"] * config.risk.max_position_pct,
+            min_notional,
+            skipped_low_equity[:5],
+        )
+    snapshots = tradeable_snapshots
+
+    if not snapshots:
+        logger.warning(
+            "No tradeable symbols this tick — account equity $%.2f too low "
+            "to meet $%.0f minimum trade at %.0f%% position sizing. "
+            "Add funds or increase max_position_pct.",
+            portfolio["equity"], min_notional,
+            config.risk.max_position_pct * 100,
+        )
+        return
+
     # 7. AI decisions — pass research signals, Massive indicators, and earnings context
     decisions = ai_engine.decide_batch(
         snapshots,
