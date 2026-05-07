@@ -39,12 +39,12 @@ class AnthropicConfig:
 
 @dataclass
 class RiskConfig:
-    max_position_pct: float = 0.12     # was 0.06 — $22 per trade at $186
+    max_position_pct: float = 0.02
     stop_loss_pct: float = 0.05
-    take_profit_pct: float = 0.10
-    max_daily_drawdown_pct: float = 0.04  # was 0.02 — $7.44 kill switch
-    max_open_positions: int = 5         # was 10 — at $22/trade, 5 = $110 deployed
-    min_settled_cash_reserve: float = 30.0  # stays — now scales automatically
+    take_profit_pct: float = 0.15
+    max_daily_drawdown_pct: float = 0.02
+    max_open_positions: int = 15
+    min_settled_cash_reserve: float = 30.0   # Always keep $30 settled for HIGH urgency signals
 
 
 @dataclass
@@ -132,7 +132,10 @@ class WatchlistConfig:
 
 @dataclass
 class AgentConfig:
-    loop_interval_seconds: int = 900
+    # Default 300s (5 min) — configurable per account type via env var.
+    # Live account: set LOOP_INTERVAL_SECONDS=300 in .env_trading
+    # Paper account: can use 300-900s depending on preference
+    loop_interval_seconds: int = int(__import__("os").getenv("LOOP_INTERVAL_SECONDS", "300"))
     indicator_lookback: int = 50
     min_confidence: float = 0.65
     log_level: str = "INFO"

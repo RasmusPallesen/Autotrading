@@ -353,7 +353,10 @@ def get_dynamic_symbols(
                     "gainer", "volume", "scanner", "active", "explosive",
                     "surge", "spike", "rally", "turnaround", "upgrade",
                     "breakout", "momentum", "jump", "soar", "beat",
-                    "record", "growth", "demand"
+                    "record", "growth", "demand",
+                    # Intraday monitor keywords
+                    "intraday", "dip", "wave", "vwap", "capitulation",
+                    "universe discovery", "sector sympathy",
                 ])
                 or conviction >= 0.70
             )
@@ -385,6 +388,7 @@ def run_loop(
     massive_fetcher=None,
     earnings_cal=None,
     clinical_cal=None,
+    fast_retry_symbols: list = None,
 ):
     logger.info("--- Agent loop tick ---")
 
@@ -404,12 +408,24 @@ def run_loop(
     positions_map = {p["symbol"]: p for p in positions}
 
     # 2. Build dynamic symbol list from full research universe
+    # In fast retry mode, only evaluate the blocked HIGH urgency symbols
+    # to minimise API cost and latency on the retry tick.
     full_universe = config.watchlist.all_symbols
-    all_symbols, discovered_symbols, research_signals = get_dynamic_symbols(
-        research_store,
-        full_universe,
-        min_conviction=RESEARCH_GATE_THRESHOLD,
-    )
+    if fast_retry_symbols:
+        logger.info("Fast retry mode: evaluating only %s", fast_retry_symbols)
+        all_symbols = fast_retry_symbols
+        discovered_symbols = []
+        try:
+            active_signals = research_store.get_all_active() if research_store else []
+            research_signals = {s["symbol"]: s for s in active_signals}
+        except Exception:
+            research_signals = {}
+    else:
+        all_symbols, discovered_symbols, research_signals = get_dynamic_symbols(
+            research_store,
+            full_universe,
+            min_conviction=RESEARCH_GATE_THRESHOLD,
+        )
 
     logger.info(
         "Active this tick: %d/%d symbols (research-gated) + %d scanner discoveries",
@@ -759,7 +775,33 @@ def run_loop(
             else:
                 logger.info("[%s] SELL signal but no open position.", decision.symbol)
 
+    # ── Collect blocked HIGH urgency BUYs for fast retry ──────────────────────
+    # These are returned to main() so it can re-run the loop for just these
+    # symbols after a 60-second wait, rather than waiting the full interval.
+    high_urgency_blocked = []
+    for decision in buys:
+        if (decision.urgency == "HIGH"
+                and decision.symbol not in [
+                    d.symbol for d in decisions
+                    if d.action == "BUY" and d.confidence >= config.agent.min_confidence
+                    and d.symbol in (positions_map or {})
+                ]):
+            # Check if it was actually executed this tick
+            was_executed = decision.symbol in {
+                p["symbol"] for p in (positions or [])
+                if p not in (positions_map or {})
+            }
+            if not was_executed and decision.action == "BUY":
+                high_urgency_blocked.append(decision.symbol)
+
+    if high_urgency_blocked:
+        logger.info(
+            "HIGH urgency BUYs not executed this tick: %s -- queued for fast retry",
+            high_urgency_blocked,
+        )
+
     logger.info("--- Tick complete ---")
+    return high_urgency_blocked
 
 
 def main():
@@ -809,10 +851,45 @@ def main():
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
+    # Fast retry interval for blocked HIGH urgency signals (seconds)
+    FAST_RETRY_INTERVAL = int(os.getenv("FAST_RETRY_INTERVAL_SEC", "60"))
+
     while running:
         if is_market_open():
             try:
-                run_loop(data_fetcher, None, ai_engine, executor, risk, store, research_store, massive_fetcher, earnings_cal, clinical_cal)
+                high_urgency_blocked = run_loop(
+                    data_fetcher, None, ai_engine, executor, risk,
+                    store, research_store, massive_fetcher, earnings_cal, clinical_cal,
+                )
+
+                # Fast retry: if HIGH urgency BUYs were blocked, wait 60s
+                # and re-run the loop specifically for those symbols.
+                # This gives them a second chance before the full interval elapses —
+                # critical for intraday DIP signals that recover in <5 minutes.
+                if high_urgency_blocked and running and is_market_open():
+                    logger.info(
+                        "Fast retry in %ds for HIGH urgency blocked symbols: %s",
+                        FAST_RETRY_INTERVAL, high_urgency_blocked,
+                    )
+                    time.sleep(FAST_RETRY_INTERVAL)
+
+                    if running and is_market_open():
+                        try:
+                            # Temporarily override watchlist to only retry blocked symbols
+                            # by injecting them as high-conviction research signals
+                            logger.info(
+                                "--- Fast retry tick for %s ---",
+                                high_urgency_blocked,
+                            )
+                            run_loop(
+                                data_fetcher, None, ai_engine, executor, risk,
+                                store, research_store, massive_fetcher,
+                                earnings_cal, clinical_cal,
+                                fast_retry_symbols=high_urgency_blocked,
+                            )
+                        except Exception as e:
+                            logger.warning("Fast retry error: %s", e)
+
             except Exception as e:
                 logger.exception("Unhandled exception in agent loop: %s", e)
         else:

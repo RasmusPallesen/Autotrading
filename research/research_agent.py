@@ -33,6 +33,8 @@ from data.iv_monitor import IVMonitor
 from data.motley_fool_fetcher import fetch_motley_fool
 from data.breakout_screener import BreakoutScreener
 from data.institutional_monitor import InstitutionalMonitor, get_ticker_cik_map
+from data.universe_scanner import UniverseScanner
+from data.intraday_monitor import IntradayMonitor, CORE_INTRADAY
 from data.clinical_catalyst_calendar import ClinicalCatalystCalendar
 
 logging.basicConfig(
@@ -246,7 +248,7 @@ def _fetch_motley_fool_cached(symbols: list) -> list:
 
 # ── Main research cycle ────────────────────────────────────────────────────────
 
-def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, clinical_cal=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None):
+def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, clinical_cal=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None, universe_scanner=None, intraday_monitor=None, universe_candidates=None, research_signals_map=None):
     logger.info("=== Research cycle starting ===")
 
     base_symbols = config.watchlist.all_symbols
@@ -465,6 +467,77 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         except Exception as e:
             logger.warning("Institutional monitor error: %s", e)
 
+    # ── Intraday monitor — 1-minute momentum/dip signals ────────────────────
+    # Watches CORE_INTRADAY symbols + universe discoveries every research cycle.
+    # Writes high-TTL signals directly — bypasses Claude for speed.
+    intraday_items = []
+    if intraday_monitor and is_market_open():
+        try:
+            # Combine core intraday watchlist with universe discoveries
+            intraday_symbols = list(dict.fromkeys(
+                CORE_INTRADAY + [c.symbol for c in (universe_candidates or [])]
+            ))
+
+            # Fetch fresh 1-min bars
+            from data.alpaca_fetcher import AlpacaDataFetcher
+            _fetcher = AlpacaDataFetcher(alpaca_config) if alpaca_config else None
+            bars_1min = {}
+            if _fetcher:
+                bars_1min = _fetcher.get_bars(
+                    symbols=intraday_symbols,
+                    lookback_bars=60,
+                    timeframe="1Min",
+                )
+
+            # Get current research signals for fundamental gate
+            current_signals = research_signals_map or {}
+
+            intraday_signals = intraday_monitor.scan(
+                symbols=intraday_symbols,
+                bars_1min=bars_1min,
+                research_signals=current_signals,
+            )
+
+            for sig in intraday_signals:
+                logger.info(
+                    "[INTRADAY] %s %s conviction=%.0f%% fundamental=%s",
+                    sig.symbol, sig.signal_type,
+                    sig.conviction * 100, sig.has_fundamental,
+                )
+                # Write directly to store — bypasses Claude analysis
+                store.write_signal(
+                    symbol=sig.symbol,
+                    sentiment=sig.sentiment,
+                    conviction=sig.conviction,
+                    recommended_action=sig.recommended_action,
+                    summary=sig.to_summary(),
+                    key_points=sig.to_key_points(),
+                    risk_factors=sig.to_risk_factors(),
+                    sources_used=1,
+                    ttl_hours=sig.ttl_hours,
+                )
+                # Also add as ResearchItem for Claude context in next cycle
+                intraday_items.append(ResearchItem(
+                    source="intraday_monitor",
+                    symbol=sig.symbol,
+                    title=f"[INTRADAY|{sig.signal_type}] {sig.symbol}: {sig.rationale[:80]}",
+                    summary=sig.to_summary(),
+                    url=f"https://finance.yahoo.com/quote/{sig.symbol}",
+                    published_at=datetime.now(timezone.utc),
+                    raw={
+                        "signal_type": sig.signal_type,
+                        "conviction": sig.conviction,
+                        "rsi": sig.rsi,
+                        "volume_ratio": sig.volume_ratio,
+                        "has_fundamental": sig.has_fundamental,
+                    },
+                ))
+        except Exception as e:
+            logger.warning("Intraday monitor error: %s", e)
+    elif not is_market_open():
+        logger.debug("Intraday monitor skipped -- market closed")
+
+    # News, SEC, Reddit — no caching here (freshness matters)
     # News, SEC, Reddit — no caching here (freshness matters)
     news_items = fetch_news(
         all_symbols,
@@ -607,16 +680,16 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
     all_items = (
         news_items + sec_items + reddit_items +
         scanner_items + insider_items + iv_items + fool_items +
-        clinical_items + breakout_items + institutional_items
+        clinical_items + breakout_items + institutional_items + intraday_items
     )
     logger.info(
         "Collected %d items -- news=%d, SEC=%d, Reddit=%d, "
         "Scanner=%d, Insider=%d, IV=%d, MotleyFool=%d, "
-        "Clinical=%d, Breakout=%d, Institutional=%d",
+        "Clinical=%d, Breakout=%d, Institutional=%d, Intraday=%d",
         len(all_items), len(news_items), len(sec_items),
         len(reddit_items), len(scanner_items), len(insider_items),
         len(iv_items), len(fool_items), len(clinical_items),
-        len(breakout_items), len(institutional_items),
+        len(breakout_items), len(institutional_items), len(intraday_items),
     )
 
     if not all_items:
@@ -684,6 +757,14 @@ def main():
     store           = ResearchStore()
     breakout_screener       = BreakoutScreener()
     institutional_monitor   = InstitutionalMonitor()
+    universe_scanner        = UniverseScanner(
+        alpaca_api_key=os.getenv("ALPACA_API_KEY", ""),
+        alpaca_secret_key=os.getenv("ALPACA_SECRET_KEY", ""),
+        paper=os.getenv("ALPACA_PAPER", "true").lower() == "true",
+    )
+    intraday_monitor        = IntradayMonitor()
+    _universe_candidates    = []   # shared between universe scan and intraday monitor
+    _last_universe_scan     = None # timestamp of last universe scan
     earnings_cal    = EarningsCalendar()
     insider_monitor = InsiderMonitor()
     iv_monitor      = IVMonitor()
@@ -706,6 +787,37 @@ def main():
 
     while running:
         try:
+            # Universe scan — runs every 5 minutes during market hours
+            # Discovers previously unknown momentum stocks for intraday monitoring
+            now = datetime.now(timezone.utc)
+            if (is_market_open() and universe_scanner and (
+                _last_universe_scan is None or
+                (now - _last_universe_scan).total_seconds() >= 300
+            )):
+                try:
+                    _universe_candidates = universe_scanner.scan(
+                        existing_watchlist=config.watchlist.all_symbols
+                    )
+                    _last_universe_scan = now
+                    if _universe_candidates:
+                        logger.info(
+                            "Universe scan: %d new candidates -- %s",
+                            len(_universe_candidates),
+                            ", ".join(
+                                f"{c.symbol}({c.change_pct:+.1f}%)"
+                                for c in _universe_candidates[:5]
+                            ),
+                        )
+                except Exception as e:
+                    logger.warning("Universe scan error: %s", e)
+
+            # Load current research signals for intraday fundamental gate
+            try:
+                active_sigs = store.get_all_active()
+                _research_signals_map = {s["symbol"]: s for s in active_sigs}
+            except Exception:
+                _research_signals_map = {}
+
             run_research_cycle(
                 analyst, store, scanner,
                 earnings_cal, insider_monitor, iv_monitor,
@@ -713,6 +825,10 @@ def main():
                 breakout_screener=breakout_screener,
                 alpaca_config=config.alpaca,
                 institutional_monitor=institutional_monitor,
+                universe_scanner=universe_scanner,
+                intraday_monitor=intraday_monitor,
+                universe_candidates=_universe_candidates,
+                research_signals_map=_research_signals_map,
             )
         except Exception as e:
             logger.exception("Unhandled error in research cycle: %s", e)
