@@ -852,7 +852,7 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown)
 
     # Fast retry interval for blocked HIGH urgency signals (seconds)
-    FAST_RETRY_INTERVAL = int(os.getenv("FAST_RETRY_INTERVAL_SEC", "60"))
+    FAST_RETRY_INTERVAL = 60
 
     while running:
         if is_market_open():
