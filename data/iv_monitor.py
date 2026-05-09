@@ -17,7 +17,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+from data.yahoo_helper import yahoo_get, get_yahoo_session
 
 # IV rank threshold to flag as unusual (top 20% of 52-week range)
 IV_RANK_THRESHOLD = 0.80
@@ -165,13 +165,12 @@ class IVMonitor:
         """
         try:
             # Get options expiry dates
-            resp = requests.get(
+            data = yahoo_get(
                 f"https://query1.finance.yahoo.com/v7/finance/options/{symbol}",
-                headers=YAHOO_HEADERS,
                 timeout=10,
             )
-            resp.raise_for_status()
-            data = resp.json()
+            if not data:
+                return None
 
             option_chain = data.get("optionChain", {})
             result = option_chain.get("result", [])
@@ -187,14 +186,13 @@ class IVMonitor:
             nearest_expiry = expiry_dates[0]
 
             # Fetch options for nearest expiry
-            resp2 = requests.get(
+            data2 = yahoo_get(
                 f"https://query1.finance.yahoo.com/v7/finance/options/{symbol}",
                 params={"date": nearest_expiry},
-                headers=YAHOO_HEADERS,
                 timeout=10,
             )
-            resp2.raise_for_status()
-            data2 = resp2.json()
+            if not data2:
+                return None
 
             result2 = data2.get("optionChain", {}).get("result", [{}])[0]
             options = result2.get("options", [{}])[0]

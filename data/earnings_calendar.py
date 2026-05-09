@@ -18,7 +18,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+from data.yahoo_helper import yahoo_get, get_yahoo_session
 
 
 @dataclass
@@ -197,14 +197,14 @@ class EarningsCalendar:
     def _fetch_yahoo_earnings(self, symbol: str) -> Optional[EarningsEvent]:
         """Fetch earnings data for a single symbol from Yahoo Finance."""
         try:
-            resp = requests.get(
+            data_raw = yahoo_get(
                 f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}",
                 params={"modules": "calendarEvents,earnings"},
-                headers=YAHOO_HEADERS,
                 timeout=8,
             )
-            resp.raise_for_status()
-            data = resp.json().get("quoteSummary", {}).get("result", [{}])[0]
+            if not data_raw:
+                return None
+            data = data_raw.get("quoteSummary", {}).get("result", [{}])[0]
 
             # Upcoming earnings date
             calendar = data.get("calendarEvents", {})

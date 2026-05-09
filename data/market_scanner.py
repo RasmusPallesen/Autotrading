@@ -20,6 +20,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 MASSIVE_BASE = "https://api.massive.com/v3"
+from data.yahoo_helper import yahoo_get, get_yahoo_session
 YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 
@@ -228,16 +229,15 @@ class MarketScanner:
 
     def _fetch_yahoo_screener(self, screen_id: str, count: int = 25) -> List[dict]:
         try:
-            resp = requests.get(
+            data = yahoo_get(
                 "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved",
                 params={"scrIds": screen_id, "count": count, "formatted": "false"},
-                headers=YAHOO_HEADERS,
                 timeout=10,
             )
-            resp.raise_for_status()
-            results = resp.json().get("finance", {}).get("result", [])
-            if results:
-                return results[0].get("quotes", [])
+            if data:
+                results = data.get("finance", {}).get("result", [])
+                if results:
+                    return results[0].get("quotes", [])
         except Exception as e:
             logger.warning("Yahoo screener %s failed: %s", screen_id, e)
         return []
@@ -284,14 +284,14 @@ class MarketScanner:
 
     def _yahoo_detail(self, symbol: str) -> Optional[dict]:
         try:
-            resp = requests.get(
+            data = yahoo_get(
                 f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}",
                 params={"modules": "summaryProfile,price"},
-                headers=YAHOO_HEADERS,
                 timeout=5,
             )
-            resp.raise_for_status()
-            result = resp.json().get("quoteSummary", {}).get("result", [{}])[0]
+            if not data:
+                return None
+            result = data.get("quoteSummary", {}).get("result", [{}])[0]
             profile = result.get("summaryProfile", {})
             price_data = result.get("price", {})
             return {
