@@ -106,11 +106,21 @@ JSON format:
   "confidence_explanation": "One sentence explaining why conviction is this level"
 }
 
+Conviction scoring rubric — use the FULL range actively:
+- 0.85–1.0  : Exceptional. Multiple high-quality sources align (e.g. SEC filing + insider buy + strong technicals + earnings beat). Rare but use it when warranted.
+- 0.70–0.84 : Strong. Clear directional signal from at least 2 reliable sources (SEC, earnings, institutional filing, insider buy). This should be COMMON for clearly bullish/bearish situations.
+- 0.55–0.69 : Moderate. One solid signal or several weaker signals pointing the same direction. Use this for typical bullish/bearish cases with reasonable evidence.
+- 0.40–0.54 : Weak. Mixed signals, speculative data, or limited sources. NEUTRAL sentiment usually lands here.
+- 0.20–0.39 : Very low. Contradictory signals or almost no information available.
+
 Rules:
-- conviction above 0.75 only for very strong, multi-source confirmation
+- A clear earnings beat, strong insider buy, or positive SEC filing ALONE warrants 0.65–0.75. Do NOT default to 0.50 out of caution.
+- Bullish technicals (RSI momentum, breakout setup, accumulation) combined with neutral news warrants at least 0.55–0.65.
+- NEUTRAL sentiment should typically score 0.40–0.55, not 0.60+.
 - recommended_action must be consistent with overall_sentiment
 - key_points must be specific and fact-based, not generic
 - always note if information is speculative (Reddit) vs official (SEC)
+- Do NOT be systematically conservative — under-scoring costs missed trades just as over-scoring costs bad ones.
 """
 
 
