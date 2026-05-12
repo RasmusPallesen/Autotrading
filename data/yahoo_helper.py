@@ -80,28 +80,44 @@ def _fetch_crumb() -> Tuple[Optional[requests.Session], Optional[str]]:
     """
     Fetch a Yahoo Finance session cookie and crumb token.
     Returns (session, crumb) or (None, None) on failure.
+    Cloud server IPs (Hetzner, AWS etc.) get rate-limited by Yahoo aggressively.
+    We use longer delays and retry with backoff.
     """
+    import time as _time
+
     session = requests.Session()
     session.headers.update(YAHOO_HEADERS)
 
-    # Strategy 1: Standard crumb endpoint
+    # Strategy 1: Standard crumb endpoint with longer delays for server IPs
     try:
         # Step 1 — hit consent/fc page to get initial cookies
         session.get("https://fc.yahoo.com", timeout=8)
+        _time.sleep(2)  # Longer delay for cloud IPs
 
         # Step 2 — hit Yahoo Finance to get session cookies
         session.get("https://finance.yahoo.com", timeout=8)
+        _time.sleep(3)  # Give Yahoo time to establish session
 
-        # Step 3 — fetch crumb
-        resp = session.get(
-            "https://query1.finance.yahoo.com/v1/test/getcrumb",
-            timeout=8,
-        )
-        if resp.status_code == 200 and resp.text.strip():
-            crumb = resp.text.strip()
-            if len(crumb) > 3:  # Valid crumb is typically 11 chars
-                logger.debug("Crumb fetched via strategy 1: %s", crumb[:6] + "...")
-                return session, crumb
+        # Step 3 — fetch crumb with retry on 429
+        for attempt in range(3):
+            resp = session.get(
+                "https://query1.finance.yahoo.com/v1/test/getcrumb",
+                timeout=8,
+            )
+            if resp.status_code == 429:
+                wait = (attempt + 1) * 10  # 10s, 20s, 30s
+                logger.warning(
+                    "Yahoo Finance rate limited (429) on crumb fetch "
+                    "-- waiting %ds before retry %d/3", wait, attempt + 1
+                )
+                _time.sleep(wait)
+                continue
+            if resp.status_code == 200 and resp.text.strip():
+                crumb = resp.text.strip()
+                if len(crumb) > 3 and "Too Many" not in crumb:
+                    logger.debug("Crumb fetched via strategy 1: %s", crumb[:6] + "...")
+                    return session, crumb
+            break
     except Exception as e:
         logger.debug("Crumb strategy 1 failed: %s", e)
 
@@ -148,17 +164,29 @@ def yahoo_get(url: str, params: dict = None, timeout: int = 10) -> Optional[dict
     p = dict(params or {})
     if crumb:
         p["crumb"] = crumb
-    try:
-        resp = session.get(url, params=p, timeout=timeout)
-        if resp.status_code == 200:
-            return resp.json()
-        elif resp.status_code == 401:
-            # Crumb expired — force refresh on next call
-            global _CRUMB_TS
-            _CRUMB_TS = 0.0
-            logger.warning("Yahoo Finance crumb expired (401) -- will refresh on next call")
-        else:
-            logger.debug("Yahoo Finance HTTP %d for %s", resp.status_code, url)
-    except Exception as e:
-        logger.debug("Yahoo Finance request error: %s", e)
+    import time as _time
+    for attempt in range(3):
+        try:
+            resp = session.get(url, params=p, timeout=timeout)
+            if resp.status_code == 200:
+                return resp.json()
+            elif resp.status_code == 429:
+                wait = (attempt + 1) * 15  # 15s, 30s, 45s
+                logger.warning(
+                    "Yahoo Finance rate limited (429) for %s "
+                    "-- waiting %ds (attempt %d/3)", url.split("/")[-1], wait, attempt + 1
+                )
+                _time.sleep(wait)
+                continue
+            elif resp.status_code == 401:
+                global _CRUMB_TS
+                _CRUMB_TS = 0.0
+                logger.warning("Yahoo Finance crumb expired (401) -- will refresh on next call")
+                break
+            else:
+                logger.debug("Yahoo Finance HTTP %d for %s", resp.status_code, url)
+                break
+        except Exception as e:
+            logger.debug("Yahoo Finance request error: %s", e)
+            break
     return None
