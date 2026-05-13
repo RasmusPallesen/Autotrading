@@ -51,6 +51,13 @@ def _save_cache(cache: dict):
 
 
 _FILING_CACHE: dict = _load_cache()
+# Evict empty cache entries — these are from previously failed fetches
+# and should be retried rather than served as cache hits
+_empty_keys = [k for k, v in _FILING_CACHE.items() if not v or len(str(v)) < 50]
+if _empty_keys:
+    for k in _empty_keys:
+        del _FILING_CACHE[k]
+    _save_cache(_FILING_CACHE)
 
 EDGAR_HEADERS = {"User-Agent": "TradingAgent rasmus.pallesen@gmail.com"}
 
@@ -224,37 +231,69 @@ def fetch_sec_filings(symbols: List[str]) -> List[ResearchItem]:
                 # Build filing URL
                 doc_url = _find_main_document(int(cik), accession_clean, primary_doc)
 
-                # Fetch actual content for 8-K filings (most actionable)
-                # Use cache to avoid re-reading the same filing each cycle
+                # Fetch actual content for all filing types.
+                # 8-K: material events (most time-sensitive)
+                # 10-Q: quarterly earnings — richest financial data
+                # 10-K: annual report — full business overview
+                # Cache valid content to avoid re-reading same filing each cycle.
+                # Empty cache entries are NOT served — always re-try failed fetches.
                 content = ""
-                if form == "8-K" and doc_url:
-                    if accession_clean in _FILING_CACHE:
-                        content = _FILING_CACHE[accession_clean]
+                if doc_url:
+                    cached = _FILING_CACHE.get(accession_clean, "")
+                    if cached:  # Only use cache if it has actual content
+                        content = cached
                         logger.debug(
                             "Cache hit for %s %s filing (%s) -- skipping re-fetch",
                             symbol, form, accession_clean[:16],
                         )
                     else:
-                        logger.debug("Fetching 8-K content for %s: %s", symbol, doc_url)
-                        content = _fetch_filing_content(doc_url, max_chars=5000)
-                        if content:
+                        # Limit content size by form type
+                        max_chars = {
+                            "8-K":  5000,   # Material event — concise
+                            "10-Q": 8000,   # Quarterly — more detail needed
+                            "10-K": 6000,   # Annual — summary level
+                        }.get(form, 5000)
+
+                        logger.debug(
+                            "Fetching %s content for %s: %s",
+                            form, symbol, doc_url,
+                        )
+                        content = _fetch_filing_content(doc_url, max_chars=max_chars)
+                        if content and len(content) > 200:  # Only cache substantial content
                             _FILING_CACHE[accession_clean] = content
                             logger.info(
                                 "Read %d chars from %s %s filing (cached)",
                                 len(content), symbol, form,
                             )
-                            # Cap cache at 500 entries
                             if len(_FILING_CACHE) > 500:
                                 oldest = next(iter(_FILING_CACHE))
                                 del _FILING_CACHE[oldest]
-                            # Persist to disk so cache survives restarts
                             _save_cache(_FILING_CACHE)
+                        elif not content:
+                            logger.debug(
+                                "Could not fetch content for %s %s — "
+                                "will use filing metadata only",
+                                symbol, form,
+                            )
 
-                # Fall back to generic summary if content fetch failed
-                summary = content if content else (
-                    f"SEC {form} filing for {symbol} submitted on {dates[i]}. "
-                    f"Filing URL: {doc_url}"
-                )
+                # Build summary — use actual content if available,
+                # otherwise provide a structured metadata summary that at least
+                # tells Claude what type of filing this is and when it was filed.
+                if content and len(content) > 200:
+                    summary = content
+                else:
+                    form_descriptions = {
+                        "8-K":  "material event or corporate announcement",
+                        "10-Q": "quarterly financial report",
+                        "10-K": "annual financial report",
+                    }
+                    summary = (
+                        f"{symbol} filed a {form} ({form_descriptions.get(form, 'SEC filing')}) "
+                        f"on {dates[i]}. "
+                        f"Filing content could not be retrieved — "
+                        f"refer to the SEC filing directly for details: {doc_url}. "
+                        f"This filing should be reviewed for material information."
+                    )
 
                 items.append(ResearchItem(
                     source="sec",
