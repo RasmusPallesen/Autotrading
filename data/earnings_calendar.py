@@ -1,6 +1,6 @@
 """
 Earnings calendar monitor.
-Primary source: Financial Modeling Prep (FMP) API.
+Primary source: Nasdaq earnings calendar API (free, no key required).
 Fallback: SEC EDGAR submissions data.
 Yahoo Finance removed — rate-limited from server IPs.
 
@@ -189,12 +189,12 @@ class EarningsCalendar:
         logger.info(
             "Refreshing earnings calendar for %d symbols via %s",
             len(symbols),
-            "FMP" if FMP_API_KEY else "EDGAR",
+            "Nasdaq + EDGAR",
         )
         fetched = 0
 
-        if FMP_API_KEY:
-            # FMP: one bulk call covers all symbols for the date range
+        if True:  # Always use Nasdaq as primary
+            # Nasdaq: fetches day-by-day, covers all symbols
             fmp_events = self._fetch_fmp_bulk(symbols)
             for sym, event in fmp_events.items():
                 self._cache[sym] = event
@@ -275,74 +275,106 @@ class EarningsCalendar:
     def _fmp_earnings_range(
         self, from_date: date, to_date: date
     ) -> List[dict]:
-        """Fetch FMP earnings calendar for a date range."""
-        try:
-            resp = requests.get(
-                f"{FMP_BASE}/earnings-calendar",
-                params={
-                    "from":   from_date.isoformat(),
-                    "to":     to_date.isoformat(),
-                    "apikey": FMP_API_KEY,
-                },
-                timeout=12,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list):
-                    return data
-                # FMP returns error dict on bad key
-                if isinstance(data, dict) and "Error Message" in data:
-                    logger.error("FMP API error: %s", data["Error Message"])
-            elif resp.status_code == 403:
-                logger.error(
-                    "FMP API key invalid or plan limit reached (403). "
-                    "Check FMP_API_KEY in .env_trading."
-                )
-            else:
-                logger.warning("FMP earnings API HTTP %d", resp.status_code)
-        except Exception as e:
-            logger.warning("FMP earnings fetch error: %s", e)
-        return []
+        """
+        Fetch earnings calendar from Nasdaq API — free, no API key required.
+        Iterates day by day across the date range.
+        Returns list of dicts with symbol, date, eps, epsEstimated fields.
+        """
+        results = []
+        current = from_date
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.nasdaq.com",
+            "Referer": "https://www.nasdaq.com/",
+        }
+
+        while current <= to_date:
+            # Skip weekends
+            if current.weekday() < 5:
+                try:
+                    resp = requests.get(
+                        "https://api.nasdaq.com/api/calendar/earnings",
+                        params={"date": current.isoformat()},
+                        headers=headers,
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        rows = (
+                            data.get("data", {})
+                                .get("rows", [])
+                        )
+                        for row in rows:
+                            # Nasdaq format: symbol, time, eps, epsEstimated
+                            sym = row.get("symbol", "").upper().strip()
+                            if not sym:
+                                continue
+                            results.append({
+                                "symbol":       sym,
+                                "date":         current.isoformat(),
+                                "eps":          row.get("eps"),
+                                "epsEstimated": row.get("epsEstimated"),
+                                "name":         row.get("name", sym),
+                                "time":         row.get("time", ""),
+                            })
+                    import time as _t
+                    _t.sleep(0.5)  # Polite rate limiting
+                except Exception as e:
+                    logger.debug("Nasdaq earnings fetch error for %s: %s", current, e)
+            current += timedelta(days=1)
+
+        logger.info("Nasdaq earnings: %d events fetched for %s to %s",
+                    len(results), from_date, to_date)
+        return results
 
     def _parse_fmp_item(self, item: dict) -> Optional[EarningsEvent]:
-        """Parse a single FMP earnings calendar item into an EarningsEvent."""
+        """Parse a Nasdaq earnings calendar item into an EarningsEvent."""
         try:
-            sym          = item.get("symbol", "").upper()
-            date_str     = item.get("date", "")
-            eps_est      = item.get("epsEstimated")
-            eps_act      = item.get("eps")
-            rev_est      = item.get("revenueEstimated")
-            rev_act      = item.get("revenue")
-            time_of_day  = item.get("time", "")  # "bmo" (before open) or "amc" (after close)
+            sym      = item.get("symbol", "").upper().strip()
+            date_str = item.get("date", "")
+            eps_est  = item.get("epsEstimated") or item.get("eps_estimate")
+            eps_act  = item.get("eps") or item.get("eps_actual")
 
             if not (sym and date_str):
                 return None
 
             earnings_date = datetime.fromisoformat(date_str).date()
 
-            # Compute EPS surprise
-            eps_surprise_pct = None
-            if eps_act is not None and eps_est and eps_est != 0:
+            # Clean up Nasdaq's string values like "N/A" or "--"
+            def _clean(val):
+                if val is None:
+                    return None
                 try:
-                    eps_surprise_pct = (
-                        (float(eps_act) - float(eps_est)) / abs(float(eps_est))
-                    ) * 100
-                except (TypeError, ZeroDivisionError):
-                    pass
+                    s = str(val).strip().replace(",", "")
+                    if s in ("N/A", "--", "", "n/a"):
+                        return None
+                    return float(s)
+                except (ValueError, TypeError):
+                    return None
+
+            eps_est_f = _clean(eps_est)
+            eps_act_f = _clean(eps_act)
+
+            eps_surprise_pct = None
+            if eps_act_f is not None and eps_est_f and eps_est_f != 0:
+                eps_surprise_pct = (
+                    (eps_act_f - eps_est_f) / abs(eps_est_f)
+                ) * 100
 
             return EarningsEvent(
                 symbol=sym,
                 company_name=item.get("name", sym),
                 earnings_date=earnings_date,
-                confirmed=True,   # FMP data is confirmed from company filings
-                eps_estimate=float(eps_est) if eps_est is not None else None,
-                eps_actual=float(eps_act) if eps_act is not None else None,
+                confirmed=True,
+                eps_estimate=eps_est_f,
+                eps_actual=eps_act_f,
                 eps_surprise_pct=eps_surprise_pct,
-                revenue_estimate=float(rev_est) if rev_est is not None else None,
-                revenue_actual=float(rev_act) if rev_act is not None else None,
+                revenue_estimate=None,  # Nasdaq doesn't provide revenue estimates
+                revenue_actual=None,
             )
         except Exception as e:
-            logger.debug("FMP item parse error: %s", e)
+            logger.debug("Nasdaq item parse error: %s", e)
             return None
 
     # ── EDGAR fallback (no API key needed, estimated dates) ───────────────────
