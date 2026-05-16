@@ -108,47 +108,37 @@ def should_opportunity_sell(
     new_signal_confidence: float,
     weakest_position: dict,
     research_signals: dict,
-    min_confidence_gap: float = 0.15,
+    min_confidence_gap: float = 0.10,  # CHANGED: 10% gap instead of 15% for faster rotation
     earnings_events: dict = None,
 ) -> tuple:
     """
     Decide whether to sell the weakest position to fund a new opportunity.
     Returns (should_sell: bool, reason: str)
 
-    Rules:
-    - New signal must be at least 15% more confident than weakest position conviction
-    - Weakest position must not be deeply profitable (>10% gain protected)
-    - Never sell if weakest position has active research BULLISH signal
+    Rules (adjusted for short-term cycling):
+    - New signal must be at least 10% more confident than weakest position conviction
+    - Only protect positions >20% profitable (short-term cycling wants to rotate capital)
+    - Earnings beat protection REMOVED for short-term cycling
+    - Never sell if weakest position has exceptional research BULLISH signal (≥0.80)
     """
     symbol = weakest_position.get("symbol", "")
     pnl_pct = float(weakest_position.get("unrealized_plpc", 0)) * 100
 
-    # Never sell a position that is up more than 10% — let winners run
-    if pnl_pct > 10.0:
-        return False, f"{symbol} is up {pnl_pct:.1f}% -- protecting winner"
+    # CHANGED: Only protect big winners (>20%), allow rotation of smaller winners
+    if pnl_pct > 20.0:
+        return False, f"{symbol} is up {pnl_pct:.1f}% -- protecting large winner"
 
-    # Never sell within 7 days of a strong earnings beat (>=10% EPS surprise).
-    # Root cause of LLY 05/04 error: 22% EPS beat 4 days prior, stale cache
-    # showed 35% conviction, triggering an opportunity sell on a rising stock.
-    earnings_event = (earnings_events or {}).get(symbol)
-    if earnings_event and earnings_event.is_strong_beat:
-        return False, (
-            f"{symbol} had a strong earnings beat {abs(earnings_event.days_until)}d ago "
-            f"(EPS surprise: +{earnings_event.eps_surprise_pct:.1f}%) -- "
-            f"protecting post-earnings momentum"
-        )
-    if earnings_event and earnings_event.is_strong_miss:
-        # Strong miss is actually a reason TO sell — don't veto
-        pass
+    # REMOVED: Earnings beat protection (counter to short-term cycling)
+    # Short-term trading wants to participate in volatility, not avoid it
 
     # Get current research conviction for weakest position
     research = research_signals.get(symbol, {})
     pos_conviction = float(research.get("conviction", 0.5))
     pos_sentiment = research.get("sentiment", "NEUTRAL")
 
-    # Never sell if research is actively bullish on this position
-    if pos_sentiment == "BULLISH" and pos_conviction >= 0.70:
-        return False, f"{symbol} has active BULLISH research signal ({pos_conviction:.0%})"
+    # CHANGED: Only protect exceptional BULLISH signals (≥0.80), not just ≥0.70
+    if pos_sentiment == "BULLISH" and pos_conviction >= 0.80:
+        return False, f"{symbol} has exceptional BULLISH research signal ({pos_conviction:.0%})"
 
     # Check confidence gap
     confidence_gap = new_signal_confidence - pos_conviction
@@ -643,25 +633,9 @@ def run_loop(
             )
             continue
 
-        # Suppress new BUYs within 48h of earnings — binary risk
-        if (decision.action == "BUY"
-                and decision.symbol in pre_earnings_symbols
-                and decision.symbol not in positions_map):
-            logger.info(
-                "[%s] BUY suppressed -- earnings in <48h (pre-earnings caution)",
-                decision.symbol,
-            )
-            store.log_decision(
-                symbol=decision.symbol,
-                action="HOLD",
-                confidence=decision.confidence,
-                rationale=f"Pre-earnings caution: {decision.rationale}",
-                urgency="LOW",
-                approved=False,
-                approval_reason="Earnings within 48h -- no new positions",
-                notional=None,
-            )
-            continue
+        # REMOVED: Pre-earnings trading pause (counter to short-term cycling)
+        # Short-term strategy wants to trade volatility around catalysts, not avoid it
+        # Keep clinical catalyst caution above (FDA events are truly binary), but allow earnings trading
 
         # ── Opportunity-cost sell ────────────────────────────────────────────
         # Runs BEFORE risk.check() so any freed cash is visible to the risk

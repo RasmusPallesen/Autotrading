@@ -97,24 +97,10 @@ class WatchlistConfig:
     ])
 
     # ── Active trading list (evaluated every tick) ─────────────────────────────
+    # CHANGED: Expanded from 24 to all 52 symbols for high-velocity rotation
     @property
     def stocks(self) -> List[str]:
-        return [
-            # Core AI/chips
-            "NVDA", "AMD", "ASML", "TSM", "AVGO", "INTC",
-            # AI software
-            "MSFT", "GOOGL", "PLTR",
-            # Green energy
-            "ENPH", "FSLR", "NEE",
-            # MedTech diabetes
-            "NVO", "LLY", "DXCM", "PODD",
-            # Biotech
-            "MANE", "RXRX",
-            # Drone & Defence
-            "KTOS", "AVAV",
-            # General
-            "TSLA", "AAPL",
-        ]
+        return self.all_symbols  # Trade the full universe every tick
 
     # ── Full research universe (all symbols monitored) ─────────────────────────
     @property
@@ -137,7 +123,7 @@ class AgentConfig:
     # Paper account: can use 300-900s depending on preference
     loop_interval_seconds: int = int(__import__("os").getenv("LOOP_INTERVAL_SECONDS", "300"))
     indicator_lookback: int = 50
-    min_confidence: float = 0.65
+    min_confidence: float = 0.50  # CHANGED: Lowered from 0.65 for high-velocity trading
     log_level: str = "INFO"
 
     preferred_sectors: List[str] = field(default_factory=lambda: [
