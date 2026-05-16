@@ -69,6 +69,21 @@ def is_market_open() -> bool:
     return _dtime(13, 30) <= now.time() <= _dtime(20, 0)
 
 
+# ── Email monitor throttling (hourly check) ────────────────────────────────────
+
+_last_email_check: datetime | None = None
+
+
+def should_check_email() -> bool:
+    """Return True if an hour has passed since last email check."""
+    global _last_email_check
+    now = datetime.now(timezone.utc)
+    if _last_email_check is None or (now - _last_email_check).total_seconds() >= 3600:
+        _last_email_check = now
+        return True
+    return False
+
+
 # ── Earnings calendar cache ────────────────────────────────────────────────────
 
 _earnings_cache: dict = {}
@@ -249,7 +264,7 @@ def _fetch_motley_fool_cached(symbols: list) -> list:
 
 # ── Main research cycle ────────────────────────────────────────────────────────
 
-def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, clinical_cal=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None, universe_scanner=None, intraday_monitor=None, universe_candidates=None, research_signals_map=None):
+def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, clinical_cal=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None, universe_scanner=None, intraday_monitor=None, universe_candidates=None, research_signals_map=None, email_monitor=None):
     logger.info("=== Research cycle starting ===")
 
     base_symbols = config.watchlist.all_symbols
@@ -678,19 +693,31 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         except Exception as e:
             logger.warning("Clinical catalyst monitor error: %s", e)
 
+    # Email newsletters — hourly check
+    email_items = []
+    if email_monitor and should_check_email():
+        try:
+            from collector import fetch_email_items
+            email_items = fetch_email_items(email_monitor, all_symbols)
+            logger.info("Email monitor: %d items from newsletters", len(email_items))
+        except Exception as e:
+            logger.warning("Email monitor error: %s", e)
+
     all_items = (
         news_items + sec_items + reddit_items +
         scanner_items + insider_items + iv_items + fool_items +
-        clinical_items + breakout_items + institutional_items + intraday_items
+        clinical_items + breakout_items + institutional_items + intraday_items +
+        email_items
     )
     logger.info(
         "Collected %d items -- news=%d, SEC=%d, Reddit=%d, "
         "Scanner=%d, Insider=%d, IV=%d, MotleyFool=%d, "
-        "Clinical=%d, Breakout=%d, Institutional=%d, Intraday=%d",
+        "Clinical=%d, Breakout=%d, Institutional=%d, Intraday=%d, Email=%d",
         len(all_items), len(news_items), len(sec_items),
         len(reddit_items), len(scanner_items), len(insider_items),
         len(iv_items), len(fool_items), len(clinical_items),
         len(breakout_items), len(institutional_items), len(intraday_items),
+        len(email_items),
     )
 
     if not all_items:
@@ -839,6 +866,21 @@ def main():
         paper=os.getenv("ALPACA_PAPER", "true").lower() == "true",
     )
 
+    # Email monitor for newsletter ingestion (Gmail API)
+    email_monitor = None
+    credentials_path = os.path.join(os.getcwd(), "secrets", "gmail_credentials.json")
+    token_path = os.path.join(os.getcwd(), "secrets", "gmail_token.json")
+    if os.path.exists(credentials_path):
+        try:
+            from data.email_monitor import EmailMonitor
+            email_monitor = EmailMonitor(credentials_path, token_path)
+            logger.info("Email monitor initialized (Gmail API)")
+        except Exception as e:
+            logger.warning("Email monitor init failed: %s", e)
+            logger.warning("Email newsletters will not be ingested this session")
+    else:
+        logger.info("Gmail credentials not found at %s -- email ingestion disabled", credentials_path)
+
     running = True
 
     def _shutdown(sig, frame):
@@ -905,6 +947,7 @@ def main():
                     intraday_monitor=intraday_monitor,
                     universe_candidates=_universe_candidates,
                     research_signals_map=_research_signals_map,
+                    email_monitor=email_monitor,
                 )
                 _last_deep_research = datetime.now(timezone.utc)
             except Exception as e:

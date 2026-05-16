@@ -6,6 +6,11 @@ pandas-ta>=0.3.14b
 requests>=2.31.0
 streamlit>=1.35.0
 
+# Gmail API for email ingestion
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.1.0
+google-api-python-client>=2.0.0
+
 # Scheduling (optional — used if you switch from the simple sleep loop)
 APScheduler>=3.10.0
 
