@@ -50,10 +50,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("research_agent")
 
-RESEARCH_INTERVAL    = int(os.getenv("RESEARCH_INTERVAL_SECONDS", "900"))
-CONVICTION_THRESHOLD = float(os.getenv("CONVICTION_THRESHOLD", "0.70"))
-SCANNER_MIN_SCORE    = float(os.getenv("SCANNER_MIN_SCORE", "0.50"))
-SCANNER_MAX_HITS     = int(os.getenv("SCANNER_MAX_HITS", "10"))
+RESEARCH_INTERVAL      = int(os.getenv("RESEARCH_INTERVAL_SECONDS", "900"))  # Deep research: 15 min
+INTRADAY_INTERVAL      = int(os.getenv("INTRADAY_INTERVAL_SECONDS", "120"))  # Fast momentum: 2 min (short-term cycling)
+CONVICTION_THRESHOLD   = float(os.getenv("CONVICTION_THRESHOLD", "0.70"))
+SCANNER_MIN_SCORE      = float(os.getenv("SCANNER_MIN_SCORE", "0.50"))
+SCANNER_MAX_HITS       = int(os.getenv("SCANNER_MAX_HITS", "10"))
 
 EARNINGS_CACHE_TTL_HOURS = int(os.getenv("EARNINGS_CACHE_TTL_HOURS", "6"))
 INSIDER_CACHE_TTL_HOURS  = int(os.getenv("INSIDER_CACHE_TTL_HOURS", "4"))
@@ -740,11 +741,74 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
     logger.info("=== Research cycle complete ===")
 
 
+def run_fast_intraday_cycle(intraday_monitor, store, universe_candidates, research_signals_map):
+    """
+    Fast 3-minute cycle for high-velocity momentum detection.
+    Only runs intraday monitor (no SEC filings, no insider trades, no Claude analysis).
+    Writes directly to research_signals for immediate consumption by trading agent.
+    """
+    if not is_market_open():
+        return
+
+    logger.info("=== FAST INTRADAY CYCLE ===")
+
+    # Combine core volatile stocks with universe discoveries
+    intraday_symbols = list(dict.fromkeys(
+        CORE_INTRADAY +
+        [c.symbol for c in (universe_candidates or [])[:20]]
+    ))
+
+    logger.info(
+        "Intraday scan: %d symbols (%d core + %d discovered)",
+        len(intraday_symbols),
+        len([s for s in intraday_symbols if s in CORE_INTRADAY]),
+        len([s for s in intraday_symbols if s not in CORE_INTRADAY]),
+    )
+
+    try:
+        signals = intraday_monitor.scan(
+            symbols=intraday_symbols,
+            existing_research=research_signals_map or {},
+        )
+
+        if signals:
+            logger.info("Intraday signals: %d detected", len(signals))
+            for sig in signals:
+                # Write directly to research_signals with short TTL
+                store.write_signal(
+                    symbol=sig.symbol,
+                    sentiment=sig.sentiment,
+                    conviction=sig.conviction,
+                    recommended_action=sig.recommended_action,
+                    summary=sig.to_summary(),
+                    key_points=[sig.rationale],
+                    risk_factors=[
+                        "Intraday signal — expires fast. Use tight stops.",
+                        "Mean reversion or momentum continuation — watch for reversal.",
+                    ],
+                    sources_used=1,
+                    ttl_hours=sig.ttl_hours,
+                )
+                logger.info(
+                    "[%s] %s | conviction=%.0f%% | %s | price=$%.2f | chg_1h=%+.1f%%",
+                    sig.symbol, sig.signal_type, sig.conviction * 100,
+                    sig.sentiment, sig.price, sig.price_change_1h,
+                )
+        else:
+            logger.info("No intraday signals detected this cycle")
+
+    except Exception as e:
+        logger.warning("Fast intraday cycle error: %s", e)
+
+    logger.info("=== Fast intraday cycle complete ===")
+
+
 def main():
     os.makedirs(os.path.join(os.getcwd(), "logs"), exist_ok=True)
 
-    logger.info("Research Agent starting up")
-    logger.info("  Interval: %ds (%d min)", RESEARCH_INTERVAL, RESEARCH_INTERVAL // 60)
+    logger.info("Research Agent starting up (TWO-SPEED MODE)")
+    logger.info("  Deep research interval: %ds (%d min)", RESEARCH_INTERVAL, RESEARCH_INTERVAL // 60)
+    logger.info("  Fast intraday interval: %ds (%d min)", INTRADAY_INTERVAL, INTRADAY_INTERVAL // 60)
     logger.info("  Conviction threshold: %.0f%%", CONVICTION_THRESHOLD * 100)
     logger.info("  Watchlist: %d symbols", len(config.watchlist.all_symbols))
     logger.info(
@@ -785,57 +849,82 @@ def main():
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
+    _last_deep_research = None  # Track when last full research cycle ran
+    _research_signals_map = {}
+
     while running:
-        try:
-            # Universe scan — runs every 5 minutes during market hours
-            # Discovers previously unknown momentum stocks for intraday monitoring
-            now = datetime.now(timezone.utc)
-            if (is_market_open() and universe_scanner and (
-                _last_universe_scan is None or
-                (now - _last_universe_scan).total_seconds() >= 300
-            )):
-                try:
-                    _universe_candidates = universe_scanner.scan(
-                        existing_watchlist=config.watchlist.all_symbols
-                    )
-                    _last_universe_scan = now
-                    if _universe_candidates:
-                        logger.info(
-                            "Universe scan: %d new candidates -- %s",
-                            len(_universe_candidates),
-                            ", ".join(
-                                f"{c.symbol}({c.change_pct:+.1f}%)"
-                                for c in _universe_candidates[:5]
-                            ),
-                        )
-                except Exception as e:
-                    logger.warning("Universe scan error: %s", e)
+        now = datetime.now(timezone.utc)
 
-            # Load current research signals for intraday fundamental gate
+        # Universe scan — runs every 5 minutes during market hours
+        # Discovers previously unknown momentum stocks for intraday monitoring
+        if (is_market_open() and universe_scanner and (
+            _last_universe_scan is None or
+            (now - _last_universe_scan).total_seconds() >= 300
+        )):
             try:
-                active_sigs = store.get_all_active()
-                _research_signals_map = {s["symbol"]: s for s in active_sigs}
-            except Exception:
-                _research_signals_map = {}
+                _universe_candidates = universe_scanner.scan(
+                    existing_watchlist=config.watchlist.all_symbols
+                )
+                _last_universe_scan = now
+                if _universe_candidates:
+                    logger.info(
+                        "Universe scan: %d new candidates -- %s",
+                        len(_universe_candidates),
+                        ", ".join(
+                            f"{c.symbol}({c.change_pct:+.1f}%)"
+                            for c in _universe_candidates[:5]
+                        ),
+                    )
+            except Exception as e:
+                logger.warning("Universe scan error: %s", e)
 
-            run_research_cycle(
-                analyst, store, scanner,
-                earnings_cal, insider_monitor, iv_monitor,
-                clinical_cal=clinical_cal,
-                breakout_screener=breakout_screener,
-                alpaca_config=config.alpaca,
-                institutional_monitor=institutional_monitor,
-                universe_scanner=universe_scanner,
-                intraday_monitor=intraday_monitor,
-                universe_candidates=_universe_candidates,
-                research_signals_map=_research_signals_map,
-            )
-        except Exception as e:
-            logger.exception("Unhandled error in research cycle: %s", e)
+        # Load current research signals for intraday fundamental gate
+        try:
+            active_sigs = store.get_all_active()
+            _research_signals_map = {s["symbol"]: s for s in active_sigs}
+        except Exception:
+            pass
+
+        # Decide: full research cycle or fast intraday-only?
+        should_run_deep = (
+            _last_deep_research is None or
+            (now - _last_deep_research).total_seconds() >= RESEARCH_INTERVAL
+        )
+
+        if should_run_deep:
+            # SLOW CYCLE: Full research (SEC, insider, Claude analysis, everything)
+            try:
+                run_research_cycle(
+                    analyst, store, scanner,
+                    earnings_cal, insider_monitor, iv_monitor,
+                    clinical_cal=clinical_cal,
+                    breakout_screener=breakout_screener,
+                    alpaca_config=config.alpaca,
+                    institutional_monitor=institutional_monitor,
+                    universe_scanner=universe_scanner,
+                    intraday_monitor=intraday_monitor,
+                    universe_candidates=_universe_candidates,
+                    research_signals_map=_research_signals_map,
+                )
+                _last_deep_research = datetime.now(timezone.utc)
+            except Exception as e:
+                logger.exception("Unhandled error in deep research cycle: %s", e)
+        else:
+            # FAST CYCLE: Intraday momentum detection only (3-min refresh)
+            try:
+                run_fast_intraday_cycle(
+                    intraday_monitor=intraday_monitor,
+                    store=store,
+                    universe_candidates=_universe_candidates,
+                    research_signals_map=_research_signals_map,
+                )
+            except Exception as e:
+                logger.exception("Unhandled error in fast intraday cycle: %s", e)
 
         if running:
             if is_market_open():
-                interval = RESEARCH_INTERVAL
+                # Next cycle: fast intraday (every 3 min), or slow if 15 min elapsed
+                interval = INTRADAY_INTERVAL
                 logger.info("Market open -- next cycle in %ds", interval)
             else:
                 interval = 7200
