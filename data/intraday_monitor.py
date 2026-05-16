@@ -35,19 +35,33 @@ import pandas_ta as ta
 logger = logging.getLogger(__name__)
 
 # ── Thresholds ─────────────────────────────────────────────────────────────────
-RSI_DIP_THRESHOLD       = float(os.getenv("INTRADAY_RSI_DIP", "28"))
+RSI_DIP_THRESHOLD       = float(os.getenv("INTRADAY_RSI_DIP", "30"))        # Raised from 28 — catch dips earlier
 RSI_WAVE_CROSS          = float(os.getenv("INTRADAY_RSI_WAVE", "50"))
-VWAP_DIP_PCT            = float(os.getenv("INTRADAY_VWAP_DIP", "1.5"))
-VOLUME_CONFIRM_RATIO    = float(os.getenv("INTRADAY_VOLUME_RATIO", "1.8"))
-MIN_CONVICTION          = float(os.getenv("INTRADAY_MIN_CONVICTION", "0.60"))
+VWAP_DIP_PCT            = float(os.getenv("INTRADAY_VWAP_DIP", "1.2"))      # Lowered from 1.5 — tighter mean reversion
+VOLUME_CONFIRM_RATIO    = float(os.getenv("INTRADAY_VOLUME_RATIO", "1.5"))  # Lowered from 1.8 — less strict volume
+MIN_CONVICTION          = float(os.getenv("INTRADAY_MIN_CONVICTION", "0.55")) # Lowered from 0.60 — more aggressive
 FUNDAMENTAL_BOOST       = float(os.getenv("INTRADAY_FUNDAMENTAL_BOOST", "0.10"))
 MAX_CONVICTION_NO_FUND  = float(os.getenv("INTRADAY_MAX_CONV_NO_FUND", "0.65"))
 
-# High-volatility symbols always monitored regardless of universe scanner
+# High-volatility symbols always monitored every 2 minutes for short-term waves
+# EXPANDED for high-velocity short-term cycling — includes all high-beta stocks
 CORE_INTRADAY = [
-    "NVDA", "AMD", "PLTR", "TSLA", "MANE",
-    "RXRX", "KTOS", "AVAV", "DXCM", "PODD",
-    "COIN", "MSFT", "GOOGL",
+    # Mega-cap tech (high volume, intraday moves)
+    "NVDA", "AMD", "MSFT", "GOOGL", "META", "TSLA", "AAPL",
+    # AI software (volatile)
+    "PLTR", "AI", "SOUN", "BBAI",
+    # Biotech (high beta, catalyst-driven)
+    "MANE", "RXRX", "BEAM", "CRSP", "NTLA",
+    # MedTech (GLP-1 momentum)
+    "NVO", "LLY", "DXCM", "PODD", "TNDM",
+    # Drone/defence (news-driven)
+    "KTOS", "AVAV", "RCAT", "AXON",
+    # Green energy (volatile)
+    "ENPH", "SEDG", "FSLR", "PLUG", "CHPT",
+    # Crypto proxies
+    "COIN", "MSTR",
+    # Semiconductors
+    "ASML", "TSM", "AVGO", "QCOM", "ARM", "INTC",
 ]
 
 
