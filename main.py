@@ -656,6 +656,14 @@ def run_loop(
             )
 
         # ── Risk verdict (always sees post-sell portfolio state) ─────────────
+        # Guard: skip SELL decisions for symbols not in the portfolio.
+        # Claude evaluates all watchlist symbols — SELL on an unheld stock is noise,
+        # not a trade signal. Drop it here before risk-check and logging so it
+        # never appears in the dashboard as an "approved" SELL.
+        if decision.action == "SELL" and decision.symbol not in positions_map:
+            logger.debug("[%s] SELL signal skipped — symbol not held", decision.symbol)
+            continue
+
         verdict = risk.check(
             decision=decision,
             portfolio=portfolio,
