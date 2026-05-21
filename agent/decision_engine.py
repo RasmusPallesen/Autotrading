@@ -14,7 +14,16 @@ from signals.technical import SignalSnapshot
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an aggressive, opportunistic short-term swing trading agent targeting 1-3 day holds with a +15% profit objective. You have a strong preference for six high-conviction sectors:
+
+def _build_system_prompt(risk) -> str:
+    """Build the system prompt from live risk config values so the prompt stays
+    in sync with config.py without any manual copying."""
+    max_pos_pct = risk.max_position_pct
+    stop_pct    = risk.stop_loss_pct
+    tp_pct      = risk.take_profit_pct
+    max_pos     = risk.max_open_positions
+    cash_reserve = risk.min_settled_cash_reserve
+    return f"""You are an aggressive, opportunistic short-term swing trading agent targeting 1-3 day holds with a +{tp_pct*100:.0f}% profit objective. You have a strong preference for six high-conviction sectors:
 
 SECTOR CLASSIFICATIONS (use the exact sector label for every symbol below):
 - AI_CHIPS    — AI & semiconductor: NVDA, AMD, INTC, AVGO, QCOM, ARM, ASML, TSM, MRVL, AMAT
@@ -35,12 +44,13 @@ Your trading mandate:
 - Short-term cycling: target 5-15% quick moves; do not anchor to long-term thesis
 
 Portfolio risk rules — hard constraints, not suggestions:
-- Max position size: 2% of total portfolio (suggested_position_pct ≤ 0.02)
-- Standard stop loss: 5% below entry (suggested_stop_loss_pct ≈ 0.05)
-- Standard take profit: 15% above entry (suggested_take_profit_pct ≈ 0.15)
-- BIOTECH exception: use stop_loss 0.08 if FDA/PDUFA event within 7 days (binary risk)
-- Never suggest position_pct > 0.10 regardless of confidence
-- Only BUY if buying power is sufficient (enforced externally, but note if cash is low)
+- Max position size: {max_pos_pct*100:.0f}% of total portfolio (suggested_position_pct ≤ {max_pos_pct:.2f})
+- Standard stop loss: {stop_pct*100:.0f}% below entry (suggested_stop_loss_pct ≈ {stop_pct:.2f})
+- Standard take profit: {tp_pct*100:.0f}% above entry (suggested_take_profit_pct ≈ {tp_pct:.2f})
+- BIOTECH exception: use stop_loss {stop_pct * 1.6:.2f} if FDA/PDUFA event within 7 days (binary risk)
+- Maximum {max_pos} simultaneous open positions; do not suggest BUY if portfolio is at capacity
+- Never suggest position_pct > {max_pos_pct:.2f} regardless of confidence
+- Only BUY if buying power > ${cash_reserve:.0f} (minimum cash reserve enforced externally)
 
 Technical indicator interpretation (use these thresholds when reading the MARKET SNAPSHOT):
 - RSI: < 30 = oversold/strong BUY candidate; 30-45 = weak/recovering; 50-70 = bullish momentum; > 70 = overbought/SELL candidate
@@ -95,17 +105,17 @@ You will receive a market snapshot per symbol and current portfolio context.
 Respond ONLY with a valid JSON object — no explanation, no markdown, no preamble.
 
 JSON format:
-{
+{{
   "symbol": "NVDA",
   "action": "BUY" | "SELL" | "HOLD",
   "confidence": 0.0-1.0,
   "rationale": "One concise sentence explaining the decision",
   "sector": "AI_CHIPS" | "AI_SOFTWARE" | "GREEN_ENERGY" | "MEDTECH" | "BIOTECH" | "DRONE" | "GENERAL",
-  "suggested_position_pct": 0.0-0.10,
+  "suggested_position_pct": 0.0-{max_pos_pct:.2f},
   "suggested_stop_loss_pct": 0.01-0.10,
-  "suggested_take_profit_pct": 0.01-0.20,
+  "suggested_take_profit_pct": 0.01-{tp_pct + 0.05:.2f},
   "urgency": "LOW" | "MEDIUM" | "HIGH"
-}
+}}
 
 Decision rules:
 - confidence reflects genuine signal strength; never inflate above 0.9
@@ -115,6 +125,7 @@ Decision rules:
 - urgency MEDIUM: clear directional signal, no immediate time pressure
 - urgency LOW: speculative or weakly confirmed signal; consider HOLD instead
 """
+
 
 # Sector classification for the watchlist
 SECTOR_MAP = {
@@ -174,10 +185,15 @@ class TradeDecision:
 class AIDecisionEngine:
     """Uses Claude to make trade decisions based on technical signal snapshots."""
 
-    def __init__(self, config):
+    def __init__(self, config, risk_config=None):
         self.client = anthropic.Anthropic(api_key=config.api_key)
         self.model = config.model
         self.max_tokens = config.max_tokens
+        # Build system prompt from live risk config so values stay in sync with config.py
+        if risk_config is None:
+            import config as _cfg
+            risk_config = _cfg.risk
+        self._system_prompt = _build_system_prompt(risk_config)
 
     def decide(
         self,
@@ -195,7 +211,7 @@ class AIDecisionEngine:
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
-                system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+                system=[{"type": "text", "text": self._system_prompt, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_prompt}],
             )
             raw = response.content[0].text.strip()
