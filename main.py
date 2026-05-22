@@ -280,7 +280,7 @@ def validate_config():
 
 
 # Minimum research conviction to include a symbol in the trading cycle
-RESEARCH_GATE_THRESHOLD = 0.55
+RESEARCH_GATE_THRESHOLD = 0.45  # CHANGED: was 0.55; lowered to match agent.min_confidence
 
 
 def get_dynamic_symbols(
