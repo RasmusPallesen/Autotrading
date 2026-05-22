@@ -28,10 +28,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("controller")
 
-NTFY_BASE     = os.getenv("NTFY_BASE_URL", "https://ntfy.sh")
-CMD_TOPIC     = os.getenv("NTFY_CMD_TOPIC", "")
-NOTIFY_TOPIC  = os.getenv("NTFY_TOPIC", "")
-POLL_INTERVAL = int(os.getenv("CONTROLLER_POLL_SEC", "15"))
+NTFY_BASE      = os.getenv("NTFY_BASE_URL", "https://ntfy.sh")
+CMD_TOPIC      = os.getenv("NTFY_CMD_TOPIC", "")
+NOTIFY_TOPIC   = os.getenv("NTFY_TOPIC", "")
+POLL_INTERVAL  = int(os.getenv("CONTROLLER_POLL_SEC", "15"))
+DASHBOARD_URL  = os.getenv("DASHBOARD_URL", "")
 
 _live_confirm_pending_until: float = 0.0
 _last_message_id: str = ""
@@ -238,6 +239,26 @@ def _handle_command(raw: str):
         except Exception as e:
             _notify("Logs Error", str(e))
 
+    elif cmd in ("dashboard", "logs url"):
+        if DASHBOARD_URL:
+            try:
+                requests.post(
+                    f"{NTFY_BASE}/{NOTIFY_TOPIC}",
+                    data="Tap to open live trading dashboard with logs".encode("utf-8"),
+                    headers={
+                        "Title": "Live Dashboard",
+                        "Priority": "default",
+                        "Click": DASHBOARD_URL,
+                        "Content-Type": "text/plain; charset=utf-8",
+                    },
+                    timeout=5,
+                )
+                logger.info("Sent dashboard URL: %s", DASHBOARD_URL)
+            except Exception as e:
+                logger.warning("Dashboard URL notification error: %s", e)
+        else:
+            _notify("Dashboard URL", "Set DASHBOARD_URL env var on server (e.g. http://server-ip:8501)")
+
     elif cmd in ("help", "?", "commands"):
         _notify("Available Commands",
             "status\n"
@@ -245,6 +266,7 @@ def _handle_command(raw: str):
             "stop paper / stop research / stop live / stop all\n"
             "restart paper / restart research\n"
             "logs paper / logs research\n"
+            "dashboard  (opens live log viewer in browser)\n"
             "(Live start requires second confirmation within 60s)")
 
     else:
