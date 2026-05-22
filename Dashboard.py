@@ -5,6 +5,7 @@ Run on Railway: automatically via Procfile
 """
 
 import os
+import subprocess
 import time
 from datetime import datetime
 
@@ -396,6 +397,75 @@ else:
             <p style="margin:8px 0 0;font-size:13px;color:#9ca3af;">{row["summary"]}</p>
         </div>
         """, unsafe_allow_html=True)
+
+# ── Live Logs ─────────────────────────────────────────────────────────────────
+st.divider()
+st.subheader("Live Agent Logs")
+
+_LOG_FILES = {
+    "Trading Agent":   ("logs/agent.log",      "trading-paper"),
+    "Research Agent":  ("logs/research.log",    "trading-research"),
+    "Controller":      ("logs/controller.log",  "trading-controller"),
+}
+
+log_col1, log_col2 = st.columns([3, 1])
+with log_col1:
+    log_service = st.radio(
+        "Service", list(_LOG_FILES.keys()), horizontal=True, label_visibility="collapsed"
+    )
+with log_col2:
+    log_lines = st.slider("Lines", 50, 500, 150, step=50)
+
+log_file, systemd_svc = _LOG_FILES[log_service]
+
+def _color_log_line(line: str) -> str:
+    l = line.rstrip()
+    if not l:
+        return ""
+    if any(x in l for x in ("ERROR", "CRITICAL")):
+        color = "#ff5555"
+    elif "WARNING" in l:
+        color = "#ffb86c"
+    elif " BUY " in l or "BUY(" in l or "action=BUY" in l:
+        color = "#50fa7b"
+    elif " SELL " in l or "SELL(" in l or "action=SELL" in l:
+        color = "#ff9580"
+    else:
+        color = "#cdd6f4"
+    escaped = l.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f'<span style="color:{color}">{escaped}</span>'
+
+raw_lines: list[str] = []
+source_label = ""
+
+try:
+    with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+        raw_lines = f.readlines()[-log_lines:]
+    source_label = f"`{log_file}`"
+except FileNotFoundError:
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", systemd_svc, "-n", str(log_lines), "--no-pager", "--output=short"],
+            capture_output=True, text=True, timeout=10,
+        )
+        raw_lines = result.stdout.splitlines(keepends=True)
+        source_label = f"journalctl `{systemd_svc}`"
+    except Exception as e:
+        st.warning(f"Could not read logs: {e}")
+        raw_lines = []
+
+if raw_lines:
+    colored = "\n".join(_color_log_line(l) for l in raw_lines if l.strip())
+    st.markdown(
+        f'<div style="font-family:monospace;font-size:11px;line-height:1.4;'
+        f'background:#1e1e2e;color:#cdd6f4;padding:14px 16px;border-radius:8px;'
+        f'overflow-x:auto;max-height:500px;overflow-y:auto;white-space:pre-wrap;">'
+        f'{colored}</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(f"Showing last {len(raw_lines)} lines from {source_label}")
+else:
+    st.info(f"No log data available for {log_service}. Start the agent first.")
 
 st.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')} -- refreshing in {refresh}s")
 time.sleep(refresh)
