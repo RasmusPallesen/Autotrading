@@ -95,17 +95,20 @@ class ResearchStore:
                 )
                 self.conn.commit()
             else:
+                # DO block catches duplicate_column internally — safe to run every startup
                 with self.conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT column_name FROM information_schema.columns "
-                        "WHERE table_name='research_signals' AND column_name='signal_type'"
-                    )
-                    if not cur.fetchone():
-                        cur.execute(
-                            "ALTER TABLE research_signals "
-                            "ADD COLUMN signal_type TEXT DEFAULT 'FUNDAMENTAL'"
-                        )
-                        logger.info("ResearchStore: migrated — added signal_type column")
+                    cur.execute("""
+                        DO $$ BEGIN
+                            BEGIN
+                                ALTER TABLE research_signals
+                                    ADD COLUMN signal_type TEXT DEFAULT 'FUNDAMENTAL';
+                                RAISE NOTICE 'signal_type column added';
+                            EXCEPTION WHEN duplicate_column THEN
+                                NULL;
+                            END;
+                        END $$;
+                    """)
+                logger.info("ResearchStore: signal_type migration complete")
         except Exception as e:
             logger.warning("ResearchStore migration warning: %s", e)
 
@@ -173,6 +176,24 @@ class ResearchStore:
             row["risk_factors"] = json.loads(row.get("risk_factors") or "[]")
         return rows
 
+    def _add_signal_type_column(self):
+        """Emergency fallback: add missing signal_type column."""
+        try:
+            if self._backend == "postgres":
+                with self.conn.cursor() as cur:
+                    cur.execute(
+                        "ALTER TABLE research_signals "
+                        "ADD COLUMN IF NOT EXISTS signal_type TEXT DEFAULT 'FUNDAMENTAL'"
+                    )
+            else:
+                self.conn.execute(
+                    "ALTER TABLE research_signals ADD COLUMN signal_type TEXT DEFAULT 'FUNDAMENTAL'"
+                )
+                self.conn.commit()
+            logger.info("ResearchStore: signal_type column added (emergency fix)")
+        except Exception as e:
+            logger.error("ResearchStore: could not add signal_type column: %s", e)
+
     def _execute(self, sql: str, params: tuple):
         try:
             if self._backend == "postgres":
@@ -182,7 +203,20 @@ class ResearchStore:
                 self.conn.execute(sql.replace("%s", "?"), params)
                 self.conn.commit()
         except Exception as e:
-            logger.error("ResearchStore write error: %s", e)
+            if "signal_type" in str(e) and "does not exist" in str(e):
+                logger.warning("ResearchStore: signal_type column missing — adding and retrying")
+                self._add_signal_type_column()
+                try:
+                    if self._backend == "postgres":
+                        with self.conn.cursor() as cur:
+                            cur.execute(sql, params)
+                    else:
+                        self.conn.execute(sql.replace("%s", "?"), params)
+                        self.conn.commit()
+                except Exception as e2:
+                    logger.error("ResearchStore write error after column fix: %s", e2)
+            else:
+                logger.error("ResearchStore write error: %s", e)
 
     def _fetchall(self, sql: str, params: tuple) -> List[dict]:
         try:
