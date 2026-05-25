@@ -319,6 +319,29 @@ class AIDecisionEngine:
                 earnings_event.to_prompt_text(),
             ]
 
+        # Inject research signal — the fundamental context Claude needs for entry decisions
+        if research_signal:
+            conv = research_signal.get("conviction", 0)
+            sentiment = research_signal.get("sentiment", "NEUTRAL")
+            action = research_signal.get("recommended_action", "HOLD")
+            sig_type = research_signal.get("signal_type", "FUNDAMENTAL")
+            summary = research_signal.get("summary", "")
+            key_points = research_signal.get("key_points") or []
+            risk_factors = research_signal.get("risk_factors") or []
+            lines += [
+                "",
+                "=== RESEARCH SIGNAL ===",
+                f"Conviction: {conv:.0%}  |  Sentiment: {sentiment}  |  Recommended: {action}  |  Type: {sig_type}",
+            ]
+            if summary:
+                lines.append(f"Summary: {summary}")
+            if key_points:
+                lines.append("Key points:")
+                for pt in key_points[:3]:
+                    lines.append(f"  • {pt}")
+            if risk_factors:
+                lines.append(f"Risk: {risk_factors[0]}")
+
         lines.append("\nProvide your trade decision as JSON only.")
         return "\n".join(lines)
 

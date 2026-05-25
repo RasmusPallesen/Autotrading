@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import sqlite3
-print("DATABASE_URL =", os.getenv("DATABASE_URL", "NOT SET"))
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -72,7 +71,8 @@ class ResearchStore:
                 key_points TEXT,
                 risk_factors TEXT,
                 sources_used INTEGER,
-                expires_at {tz} NOT NULL
+                expires_at {tz} NOT NULL,
+                signal_type TEXT DEFAULT 'FUNDAMENTAL'
             )
         """.format(
             serial="SERIAL" if self._backend == "postgres" else "INTEGER AUTOINCREMENT",
@@ -87,6 +87,22 @@ class ResearchStore:
             with self.conn.cursor() as cur:
                 cur.execute(sql)
 
+        # Migration: add signal_type column to existing tables
+        try:
+            if self._backend == "sqlite":
+                self.conn.execute(
+                    "ALTER TABLE research_signals ADD COLUMN signal_type TEXT DEFAULT 'FUNDAMENTAL'"
+                )
+                self.conn.commit()
+            else:
+                with self.conn.cursor() as cur:
+                    cur.execute(
+                        "ALTER TABLE research_signals ADD COLUMN IF NOT EXISTS "
+                        "signal_type TEXT DEFAULT 'FUNDAMENTAL'"
+                    )
+        except Exception:
+            pass  # Column already exists
+
     def write_signal(
         self,
         symbol: str,
@@ -98,6 +114,7 @@ class ResearchStore:
         risk_factors: List[str],
         sources_used: int,
         ttl_hours: int = 4,
+        signal_type: str = "FUNDAMENTAL",
     ):
         """Write a research signal, replacing any existing signal for this symbol."""
         now = datetime.now(timezone.utc)
@@ -110,16 +127,19 @@ class ResearchStore:
             now.isoformat(), symbol, sentiment, conviction,
             recommended_action, summary,
             json.dumps(key_points), json.dumps(risk_factors),
-            sources_used, expires.isoformat(),
+            sources_used, expires.isoformat(), signal_type,
         )
         sql = """
             INSERT INTO research_signals
             (ts, symbol, sentiment, conviction, recommended_action,
-             summary, key_points, risk_factors, sources_used, expires_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             summary, key_points, risk_factors, sources_used, expires_at, signal_type)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """
         self._execute(sql, params)
-        logger.info("Research signal written for %s: %s %.0f%%", symbol, sentiment, conviction * 100)
+        logger.info(
+            "Research signal written for %s: %s %.0f%% [%s]",
+            symbol, sentiment, conviction * 100, signal_type,
+        )
 
     def get_signal(self, symbol: str) -> Optional[dict]:
         """Get the most recent non-expired signal for a symbol."""
