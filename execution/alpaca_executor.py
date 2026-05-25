@@ -72,11 +72,13 @@ class AlpacaExecutor:
     def __init__(self, config):
         try:
             from alpaca.trading.client import TradingClient
-            from alpaca.trading.enums import OrderSide, TimeInForce
-            from alpaca.trading.requests import MarketOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+            from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
             self._OrderSide = OrderSide
             self._TimeInForce = TimeInForce
             self._MarketOrderRequest = MarketOrderRequest
+            self._GetOrdersRequest = GetOrdersRequest
+            self._QueryOrderStatus = QueryOrderStatus
 
             self.client = TradingClient(
                 config.api_key, config.secret_key, paper=config.paper
@@ -176,6 +178,29 @@ class AlpacaExecutor:
         Use close_all=True to liquidate the entire position.
         Returns a result dict on success, ExecutionError on known failure, None on unknown failure.
         """
+        try:
+            open_orders = self.client.get_orders(
+                self._GetOrdersRequest(
+                    status=self._QueryOrderStatus.OPEN,
+                    symbols=[symbol],
+                )
+            )
+            if open_orders:
+                logger.warning(
+                    "SELL %s skipped — %d open order(s) already pending (ids: %s)",
+                    symbol,
+                    len(open_orders),
+                    ", ".join(str(o.id) for o in open_orders),
+                )
+                return {
+                    "order_id": str(open_orders[0].id),
+                    "symbol": symbol,
+                    "side": "SELL",
+                    "skipped": "already_pending",
+                }
+        except Exception as e:
+            logger.warning("Could not check open orders for %s: %s — proceeding with sell", symbol, e)
+
         try:
             if close_all:
                 response = self.client.close_position(symbol)
