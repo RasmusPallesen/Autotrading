@@ -97,11 +97,17 @@ class ResearchStore:
             else:
                 with self.conn.cursor() as cur:
                     cur.execute(
-                        "ALTER TABLE research_signals ADD COLUMN IF NOT EXISTS "
-                        "signal_type TEXT DEFAULT 'FUNDAMENTAL'"
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name='research_signals' AND column_name='signal_type'"
                     )
-        except Exception:
-            pass  # Column already exists
+                    if not cur.fetchone():
+                        cur.execute(
+                            "ALTER TABLE research_signals "
+                            "ADD COLUMN signal_type TEXT DEFAULT 'FUNDAMENTAL'"
+                        )
+                        logger.info("ResearchStore: migrated — added signal_type column")
+        except Exception as e:
+            logger.warning("ResearchStore migration warning: %s", e)
 
     def write_signal(
         self,
