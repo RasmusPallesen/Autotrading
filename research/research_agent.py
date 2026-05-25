@@ -186,7 +186,7 @@ def _get_symbol_detail(scanner, symbol: str) -> dict:
 
 # ── Main research cycle ────────────────────────────────────────────────────────
 
-def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None, universe_scanner=None, intraday_monitor=None, momentum_monitor=None, universe_candidates=None, research_signals_map=None):
+def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, clinical_cal=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None, universe_scanner=None, intraday_monitor=None, universe_candidates=None, research_signals_map=None):
     logger.info("=== Research cycle starting ===")
 
     base_symbols = config.watchlist.all_symbols
@@ -586,21 +586,21 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
                     raw={"signal_type": sig.signal_type, "conviction": sig.conviction},
                 ))
         except Exception as e:
-            logger.warning("Momentum monitor error: %s", e)
+            logger.warning("Clinical catalyst monitor error: %s", e)
 
     all_items = (
         news_items + sec_items + reddit_items +
-        scanner_items + insider_items + iv_items +
-        breakout_items + institutional_items + intraday_items + momentum_items
+        scanner_items + insider_items + iv_items + fool_items +
+        clinical_items + breakout_items + institutional_items + intraday_items
     )
     logger.info(
         "Collected %d items -- news=%d, SEC=%d, Reddit=%d, "
-        "Scanner=%d, Insider=%d, IV=%d, "
-        "Breakout=%d, Institutional=%d, Intraday=%d, Momentum=%d",
+        "Scanner=%d, Insider=%d, IV=%d, MotleyFool=%d, "
+        "Clinical=%d, Breakout=%d, Institutional=%d, Intraday=%d",
         len(all_items), len(news_items), len(sec_items),
         len(reddit_items), len(scanner_items), len(insider_items),
-        len(iv_items), len(breakout_items), len(institutional_items),
-        len(intraday_items), len(momentum_items),
+        len(iv_items), len(fool_items), len(clinical_items),
+        len(breakout_items), len(institutional_items), len(intraday_items),
     )
 
     # Hot-symbol prioritization: force fresh Claude analysis for symbols

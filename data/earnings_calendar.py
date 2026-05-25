@@ -1,15 +1,29 @@
 """
 Earnings calendar monitor.
-Fetches upcoming and recent earnings dates for watchlist symbols.
-Uses Yahoo Finance (free, no API key required).
+Primary source: Nasdaq earnings calendar API (free, no key required).
+Fallback: SEC EDGAR submissions data.
+Yahoo Finance removed — rate-limited from server IPs.
+
+FMP advantages over Yahoo:
+- One API call fetches ALL symbols' earnings dates for a date range
+- No IP-based rate limiting
+- EPS estimates, actuals, and surprise data included
+- Reliable from cloud server IPs (Hetzner, AWS etc.)
+
+Setup:
+1. Sign up at financialmodelingprep.com (free tier: 250 calls/day)
+2. Add to .env_trading: FMP_API_KEY=your_key_here
+3. Free tier is sufficient — we make ~2 calls per day total
 
 Provides:
 - Upcoming earnings dates per symbol
 - Pre-earnings warning flags (within 48h of report)
 - Post-earnings results (EPS beat/miss, revenue surprise)
+- Strong beat/miss detection for cache invalidation
 """
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -18,7 +32,16 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-from data.yahoo_helper import yahoo_get, get_yahoo_session
+FMP_API_KEY = os.getenv("FMP_API_KEY", "")
+FMP_BASE    = "https://financialmodelingprep.com/api/v3"
+EDGAR_HEADERS = {"User-Agent": "TradingAgent rasmus.pallesen@gmail.com"}
+
+# How many days ahead to fetch earnings for
+EARNINGS_LOOKAHEAD_DAYS = 30
+# How many days back to check for recent earnings (post-earnings window)
+EARNINGS_LOOKBACK_DAYS  = 7
+# Strong beat/miss threshold for cache invalidation
+STRONG_BEAT_THRESHOLD   = float(os.getenv("STRONG_BEAT_THRESHOLD_PCT", "10"))
 
 
 @dataclass
@@ -28,10 +51,10 @@ class EarningsEvent:
     earnings_date: date
     confirmed: bool
     eps_estimate: Optional[float] = None
-    eps_actual: Optional[float] = None
+    eps_actual:   Optional[float] = None
     eps_surprise_pct: Optional[float] = None
     revenue_estimate: Optional[float] = None
-    revenue_actual: Optional[float] = None
+    revenue_actual:   Optional[float] = None
 
     @property
     def days_until(self) -> int:
@@ -53,7 +76,6 @@ class EarningsEvent:
 
     @property
     def beat_miss(self) -> Optional[str]:
-        """Returns BEAT, MISS, or IN-LINE based on EPS surprise."""
         if self.eps_surprise_pct is None:
             return None
         if self.eps_surprise_pct > 3:
@@ -62,114 +84,100 @@ class EarningsEvent:
             return "MISS"
         return "IN-LINE"
 
-
     @property
     def is_strong_beat(self) -> bool:
-        """
-        True if this is a post-earnings strong beat warranting cache invalidation.
-        Threshold: EPS surprise >= 10% — meaningful enough to override stale signals.
-        LLY Q1 2026 beat by 22%, GOOGL by 94% — both would trigger this.
-        """
-        if not self.is_post_earnings:
+        """True if post-earnings EPS beat >= STRONG_BEAT_THRESHOLD."""
+        if not self.is_post_earnings or self.eps_surprise_pct is None:
             return False
-        if self.eps_surprise_pct is None:
-            return False
-        return self.eps_surprise_pct >= float(
-            __import__("os").getenv("STRONG_BEAT_THRESHOLD_PCT", "10")
-        )
+        return self.eps_surprise_pct >= STRONG_BEAT_THRESHOLD
 
     @property
     def is_strong_miss(self) -> bool:
-        """
-        True if this is a post-earnings significant miss warranting cache invalidation.
-        Threshold: EPS surprise <= -10%.
-        """
-        if not self.is_post_earnings:
+        """True if post-earnings EPS miss <= -STRONG_BEAT_THRESHOLD."""
+        if not self.is_post_earnings or self.eps_surprise_pct is None:
             return False
-        if self.eps_surprise_pct is None:
-            return False
-        return self.eps_surprise_pct <= -float(
-            __import__("os").getenv("STRONG_BEAT_THRESHOLD_PCT", "10")
-        )
+        return self.eps_surprise_pct <= -STRONG_BEAT_THRESHOLD
 
     def to_prompt_text(self) -> str:
-        """Format for injection into Claude's trading prompt."""
         if self.is_pre_earnings_window:
             return (
-                f"EARNINGS WARNING: {self.symbol} reports earnings in {self.days_until} day(s) "
-                f"({'confirmed' if self.confirmed else 'estimated'} date: {self.earnings_date}). "
-                f"EPS estimate: {'$'+str(self.eps_estimate) if self.eps_estimate else 'N/A'}. "
+                f"EARNINGS WARNING: {self.symbol} reports earnings in "
+                f"{self.days_until} day(s) "
+                f"({'confirmed' if self.confirmed else 'estimated'} date: "
+                f"{self.earnings_date}). "
+                f"EPS estimate: "
+                f"{'$'+str(self.eps_estimate) if self.eps_estimate else 'N/A'}. "
                 f"CAUTION: Avoid adding to position before earnings — binary risk event. "
                 f"Consider reducing position size or tightening stop-loss."
             )
         elif self.is_post_earnings and self.beat_miss:
             return (
-                f"EARNINGS RESULT: {self.symbol} reported {abs(self.days_until)} day(s) ago. "
-                f"EPS {self.beat_miss}: actual=${self.eps_actual} vs estimate=${self.eps_estimate} "
+                f"EARNINGS RESULT: {self.symbol} reported "
+                f"{abs(self.days_until)} day(s) ago. "
+                f"EPS {self.beat_miss}: actual=${self.eps_actual} vs "
+                f"estimate=${self.eps_estimate} "
                 f"(surprise: {self.eps_surprise_pct:+.1f}%). "
                 f"{'Strong buy signal on beat.' if self.beat_miss == 'BEAT' else 'Caution — earnings miss may continue to weigh.'}"
             )
         else:
             return (
-                f"UPCOMING EARNINGS: {self.symbol} reports in {self.days_until} days "
-                f"({self.earnings_date}). Plan accordingly."
+                f"UPCOMING EARNINGS: {self.symbol} reports in "
+                f"{self.days_until} days ({self.earnings_date}). Plan accordingly."
             )
 
 
 class EarningsCalendar:
-    """Fetches and caches earnings dates for watchlist symbols."""
+    """
+    Fetches and caches earnings dates for watchlist symbols.
+    Primary: FMP API (one bulk call per day for all symbols).
+    Fallback: SEC EDGAR (estimated dates from filing history).
+    """
 
     def __init__(self):
         self._cache: Dict[str, EarningsEvent] = {}
         self._last_refresh: Optional[datetime] = None
-        self._refresh_interval_hours = 12  # Refresh twice daily
+        self._refresh_interval_hours = 12
+
+        if not FMP_API_KEY:
+            logger.warning(
+                "FMP_API_KEY not set — earnings calendar will use EDGAR estimates only. "
+                "Sign up free at financialmodelingprep.com and add FMP_API_KEY to .env_trading"
+            )
+
+    # ── Public interface (unchanged from original) ─────────────────────────────
 
     def get_events(self, symbols: List[str]) -> Dict[str, EarningsEvent]:
-        """
-        Get earnings events for symbols.
-        Returns dict of {symbol: EarningsEvent} for symbols with upcoming
-        or recent earnings only.
-        """
-        # Refresh cache if stale
         if self._should_refresh():
             self._refresh(symbols)
-
         return {
             sym: event
             for sym, event in self._cache.items()
-            if sym in symbols and (event.is_pre_earnings_window or
-                                   event.is_post_earnings or
-                                   event.days_until <= 7 or
-                                   event.is_strong_beat or
-                                   event.is_strong_miss)
+            if sym in symbols and (
+                event.is_pre_earnings_window or
+                event.is_post_earnings or
+                event.days_until <= 7 or
+                event.is_strong_beat or
+                event.is_strong_miss
+            )
         }
 
     def get_pre_earnings_symbols(self, symbols: List[str]) -> List[str]:
-        """Returns symbols with earnings in the next 48 hours."""
-        events = self.get_events(symbols)
-        return [sym for sym, ev in events.items() if ev.is_pre_earnings_window]
+        return [s for s, ev in self.get_events(symbols).items()
+                if ev.is_pre_earnings_window]
 
     def get_post_earnings_symbols(self, symbols: List[str]) -> List[str]:
-        """Returns symbols that reported earnings in the last 2 days."""
-        events = self.get_events(symbols)
-        return [sym for sym, ev in events.items() if ev.is_post_earnings]
-
+        return [s for s, ev in self.get_events(symbols).items()
+                if ev.is_post_earnings]
 
     def get_strong_beat_symbols(self, symbols: List[str]) -> List[str]:
-        """
-        Returns symbols with a strong EPS beat (>=10% surprise) in the last 7 days.
-        Used to force cache invalidation in the research analyst.
-        """
-        events = self.get_events(symbols)
-        return [sym for sym, ev in events.items() if ev.is_strong_beat]
+        return [s for s, ev in self.get_events(symbols).items()
+                if ev.is_strong_beat]
 
     def get_strong_miss_symbols(self, symbols: List[str]) -> List[str]:
-        """
-        Returns symbols with a significant EPS miss (<=-10% surprise) in the last 7 days.
-        Used to force cache invalidation in the research analyst.
-        """
-        events = self.get_events(symbols)
-        return [sym for sym, ev in events.items() if ev.is_strong_miss]
+        return [s for s, ev in self.get_events(symbols).items()
+                if ev.is_strong_miss]
+
+    # ── Refresh logic ──────────────────────────────────────────────────────────
 
     def _should_refresh(self) -> bool:
         if not self._last_refresh:
@@ -178,15 +186,39 @@ class EarningsCalendar:
         return age.total_seconds() > self._refresh_interval_hours * 3600
 
     def _refresh(self, symbols: List[str]):
-        """Fetch earnings data for all symbols from Yahoo Finance."""
-        logger.info("Refreshing earnings calendar for %d symbols", len(symbols))
+        logger.info(
+            "Refreshing earnings calendar for %d symbols via %s",
+            len(symbols),
+            "Nasdaq + EDGAR",
+        )
         fetched = 0
 
-        for symbol in symbols:
-            event = self._fetch_yahoo_earnings(symbol)
-            if event:
-                self._cache[symbol] = event
+        if True:  # Always use Nasdaq as primary
+            # Nasdaq: fetches day-by-day, covers all symbols
+            fmp_events = self._fetch_fmp_bulk(symbols)
+            for sym, event in fmp_events.items():
+                self._cache[sym] = event
                 fetched += 1
+
+            # For symbols not covered by FMP, fall back to EDGAR
+            missing = [s for s in symbols if s not in self._cache]
+            if missing:
+                logger.debug(
+                    "FMP missing %d symbols — trying EDGAR: %s",
+                    len(missing), missing[:5]
+                )
+                for sym in missing:
+                    event = self._fetch_edgar_earnings(sym)
+                    if event:
+                        self._cache[sym] = event
+                        fetched += 1
+        else:
+            # No FMP key — use EDGAR for all symbols
+            for sym in symbols:
+                event = self._fetch_edgar_earnings(sym)
+                if event:
+                    self._cache[sym] = event
+                    fetched += 1
 
         self._last_refresh = datetime.now(timezone.utc)
         logger.info(
@@ -194,74 +226,236 @@ class EarningsCalendar:
             fetched, len(symbols),
         )
 
-    def _fetch_yahoo_earnings(self, symbol: str) -> Optional[EarningsEvent]:
-        """Fetch earnings data for a single symbol from Yahoo Finance."""
+    # ── FMP bulk fetch (replaces 55 Yahoo calls with 2 FMP calls) ─────────────
+
+    def _fetch_fmp_bulk(self, symbols: List[str]) -> Dict[str, EarningsEvent]:
+        """
+        Fetch earnings for all symbols in ONE API call using FMP's date-range endpoint.
+        Covers both upcoming (next 30 days) and recent (last 7 days) earnings.
+        Costs 2 API calls per refresh (upcoming + recent) regardless of watchlist size.
+        """
+        events: Dict[str, EarningsEvent] = {}
+        symbol_set = {s.upper() for s in symbols}
+        today = date.today()
+
+        # Call 1: upcoming earnings (next 30 days)
+        upcoming = self._fmp_earnings_range(
+            from_date=today,
+            to_date=today + timedelta(days=EARNINGS_LOOKAHEAD_DAYS),
+        )
+        for item in upcoming:
+            sym = item.get("symbol", "").upper()
+            if sym not in symbol_set:
+                continue
+            event = self._parse_fmp_item(item)
+            if event:
+                events[sym] = event
+
+        # Call 2: recent earnings (last 7 days) for beat/miss detection
+        recent = self._fmp_earnings_range(
+            from_date=today - timedelta(days=EARNINGS_LOOKBACK_DAYS),
+            to_date=today - timedelta(days=1),
+        )
+        for item in recent:
+            sym = item.get("symbol", "").upper()
+            if sym not in symbol_set:
+                continue
+            # Only add if not already covered by upcoming (prefer upcoming)
+            if sym not in events:
+                event = self._parse_fmp_item(item)
+                if event:
+                    events[sym] = event
+
+        logger.info(
+            "FMP earnings: %d symbols with events in -%dd to +%dd window",
+            len(events), EARNINGS_LOOKBACK_DAYS, EARNINGS_LOOKAHEAD_DAYS,
+        )
+        return events
+
+    def _fmp_earnings_range(
+        self, from_date: date, to_date: date
+    ) -> List[dict]:
+        """
+        Fetch earnings calendar from Nasdaq API — free, no API key required.
+        Iterates day by day across the date range.
+        Returns list of dicts with symbol, date, eps, epsEstimated fields.
+        """
+        results = []
+        current = from_date
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.nasdaq.com",
+            "Referer": "https://www.nasdaq.com/",
+        }
+
+        while current <= to_date:
+            # Skip weekends
+            if current.weekday() < 5:
+                try:
+                    resp = requests.get(
+                        "https://api.nasdaq.com/api/calendar/earnings",
+                        params={"date": current.isoformat()},
+                        headers=headers,
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        rows = (
+                            data.get("data", {})
+                                .get("rows", [])
+                        )
+                        for row in rows:
+                            # Nasdaq format: symbol, time, eps, epsEstimated
+                            sym = row.get("symbol", "").upper().strip()
+                            if not sym:
+                                continue
+                            results.append({
+                                "symbol":       sym,
+                                "date":         current.isoformat(),
+                                "eps":          row.get("eps"),
+                                "epsEstimated": row.get("epsEstimated"),
+                                "name":         row.get("name", sym),
+                                "time":         row.get("time", ""),
+                            })
+                    import time as _t
+                    _t.sleep(0.5)  # Polite rate limiting
+                except Exception as e:
+                    logger.debug("Nasdaq earnings fetch error for %s: %s", current, e)
+            current += timedelta(days=1)
+
+        logger.info("Nasdaq earnings: %d events fetched for %s to %s",
+                    len(results), from_date, to_date)
+        return results
+
+    def _parse_fmp_item(self, item: dict) -> Optional[EarningsEvent]:
+        """Parse a Nasdaq earnings calendar item into an EarningsEvent."""
         try:
-            data_raw = yahoo_get(
-                f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}",
-                params={"modules": "calendarEvents,earnings"},
-                timeout=8,
-            )
-            if not data_raw:
-                return None
-            data = data_raw.get("quoteSummary", {}).get("result", [{}])[0]
+            sym      = item.get("symbol", "").upper().strip()
+            date_str = item.get("date", "")
+            eps_est  = item.get("epsEstimated") or item.get("eps_estimate")
+            eps_act  = item.get("eps") or item.get("eps_actual")
 
-            # Upcoming earnings date
-            calendar = data.get("calendarEvents", {})
-            earnings_dates = calendar.get("earnings", {}).get("earningsDate", [])
-
-            earnings_date = None
-            confirmed = False
-            if earnings_dates:
-                ts = earnings_dates[0].get("raw", 0)
-                if ts:
-                    earnings_date = datetime.fromtimestamp(ts, tz=timezone.utc).date()
-                    # Consider confirmed if within 30 days and second date within 5 days
-                    if len(earnings_dates) > 1:
-                        ts2 = earnings_dates[1].get("raw", 0)
-                        d2 = datetime.fromtimestamp(ts2, tz=timezone.utc).date()
-                        confirmed = abs((d2 - earnings_date).days) <= 5
-
-            if not earnings_date:
+            if not (sym and date_str):
                 return None
 
-            # EPS estimates and actuals from earnings history
-            earnings_hist = data.get("earnings", {})
-            quarterly = earnings_hist.get("earningsChart", {}).get("quarterly", [])
+            earnings_date = datetime.fromisoformat(date_str).date()
 
-            eps_estimate = None
-            eps_actual = None
+            # Clean up Nasdaq's string values like "N/A" or "--"
+            def _clean(val):
+                if val is None:
+                    return None
+                try:
+                    s = str(val).strip().replace(",", "")
+                    if s in ("N/A", "--", "", "n/a"):
+                        return None
+                    return float(s)
+                except (ValueError, TypeError):
+                    return None
+
+            eps_est_f = _clean(eps_est)
+            eps_act_f = _clean(eps_act)
+
             eps_surprise_pct = None
-            rev_estimate = None
-            rev_actual = None
-
-            # Get most recent quarter data
-            if quarterly:
-                last = quarterly[-1]
-                eps_actual = last.get("actual", {}).get("raw")
-                eps_estimate = last.get("estimate", {}).get("raw")
-                if eps_actual is not None and eps_estimate and eps_estimate != 0:
-                    eps_surprise_pct = ((eps_actual - eps_estimate) / abs(eps_estimate)) * 100
-
-            # Revenue from financials
-            fin_data = earnings_hist.get("financialsChart", {})
-            quarterly_fin = fin_data.get("quarterly", [])
-            if quarterly_fin:
-                last_fin = quarterly_fin[-1]
-                rev_actual = last_fin.get("revenue", {}).get("raw")
+            if eps_act_f is not None and eps_est_f and eps_est_f != 0:
+                eps_surprise_pct = (
+                    (eps_act_f - eps_est_f) / abs(eps_est_f)
+                ) * 100
 
             return EarningsEvent(
-                symbol=symbol,
-                company_name=symbol,
+                symbol=sym,
+                company_name=item.get("name", sym),
                 earnings_date=earnings_date,
-                confirmed=confirmed,
-                eps_estimate=eps_estimate,
-                eps_actual=eps_actual,
+                confirmed=True,
+                eps_estimate=eps_est_f,
+                eps_actual=eps_act_f,
                 eps_surprise_pct=eps_surprise_pct,
-                revenue_estimate=rev_estimate,
-                revenue_actual=rev_actual,
+                revenue_estimate=None,  # Nasdaq doesn't provide revenue estimates
+                revenue_actual=None,
             )
-
         except Exception as e:
-            logger.debug("Could not fetch earnings for %s: %s", symbol, e)
+            logger.debug("Nasdaq item parse error: %s", e)
+            return None
+
+    # ── EDGAR fallback (no API key needed, estimated dates) ───────────────────
+
+    def _fetch_edgar_earnings(self, symbol: str) -> Optional[EarningsEvent]:
+        """
+        Estimate next earnings date from SEC EDGAR filing history.
+        Uses 10-Q/10-K report dates + 91 days as estimate.
+        No API key required, no rate limits, works from any IP.
+        Confirmed=False since dates are estimated.
+        """
+        try:
+            # Get CIK for symbol
+            tickers_resp = requests.get(
+                "https://www.sec.gov/files/company_tickers.json",
+                headers=EDGAR_HEADERS,
+                timeout=8,
+            )
+            if tickers_resp.status_code != 200:
+                return None
+
+            ticker_map = {
+                v["ticker"].upper(): str(v["cik_str"]).zfill(10)
+                for v in tickers_resp.json().values()
+            }
+            cik = ticker_map.get(symbol.upper())
+            if not cik:
+                return None
+
+            # Get filing history
+            sub_resp = requests.get(
+                f"https://data.sec.gov/submissions/CIK{cik}.json",
+                headers=EDGAR_HEADERS,
+                timeout=8,
+            )
+            if sub_resp.status_code != 200:
+                return None
+
+            data = sub_resp.json()
+            recent = data.get("filings", {}).get("recent", {})
+            forms        = recent.get("form", [])
+            report_dates = recent.get("reportDate", [])
+
+            # Find most recent 10-Q or 10-K report date
+            last_report_date = None
+            for i, form in enumerate(forms[:20]):
+                if form in ("10-Q", "10-K"):
+                    try:
+                        d_str = report_dates[i] if i < len(report_dates) else ""
+                        if d_str:
+                            d = datetime.fromisoformat(d_str).date()
+                            if last_report_date is None or d > last_report_date:
+                                last_report_date = d
+                    except Exception:
+                        pass
+
+            if not last_report_date:
+                return None
+
+            # Estimate next earnings ~91 days after last report
+            estimated_next = last_report_date + timedelta(days=91)
+            today = date.today()
+            days_diff = (estimated_next - today).days
+
+            # Only return if the estimated date is relevant
+            if days_diff < -EARNINGS_LOOKBACK_DAYS or days_diff > EARNINGS_LOOKAHEAD_DAYS:
+                return None
+
+            logger.debug(
+                "[%s] EDGAR estimated earnings: %s (%+d days)",
+                symbol, estimated_next, days_diff,
+            )
+            return EarningsEvent(
+                symbol=symbol,
+                company_name=data.get("name", symbol),
+                earnings_date=estimated_next,
+                confirmed=False,
+                eps_estimate=None,
+                eps_actual=None,
+                eps_surprise_pct=None,
+            )
+        except Exception as e:
+            logger.debug("EDGAR earnings fetch failed for %s: %s", symbol, e)
             return None

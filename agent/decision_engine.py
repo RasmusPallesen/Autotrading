@@ -15,7 +15,7 @@ from signals.technical import SignalSnapshot
 logger = logging.getLogger(__name__)
 
 
-def _build_system_prompt(risk) -> str:
+def _build_system_prompt(risk, min_confidence: float = 0.55) -> str:
     """Build the system prompt from live risk config values so the prompt stays
     in sync with config.py without any manual copying."""
     max_pos_pct = risk.max_position_pct
@@ -72,9 +72,9 @@ SELL signal patterns:
 - Position at -5% from entry → stop-loss SELL
 
 HOLD criteria:
-- RSI 45-55, price near VWAP, volume near average = no clear direction → HOLD
-- Conflicting signals (e.g. bullish RSI + bearish VWAP) → HOLD
-- Research conviction < 0.50 + weak technicals → HOLD
+- RSI 45-55, price near VWAP, volume near average AND no research support = no clear direction → HOLD
+- Conflicting signals: favour the signal aligned with EMA-50 trend direction; HOLD only if BOTH trend AND momentum are ambiguous
+- Research conviction < 0.50 AND weak technicals (RSI 45-55, below VWAP) → HOLD
 
 Research signal context (if a research signal is provided):
 - conviction ≥ 0.70 + BULLISH: strong fundamental support — weight technical BUY signals more heavily; lower your confidence threshold slightly
@@ -120,7 +120,7 @@ JSON format:
 Decision rules:
 - confidence reflects genuine signal strength; never inflate above 0.9
 - for preferred sectors (AI_CHIPS through DRONE), apply up to +0.05 confidence boost
-- only return BUY/SELL if confidence ≥ 0.60; return HOLD if signals are mixed or unclear
+- only return BUY/SELL if confidence ≥ {min_confidence:.2f}; return HOLD if signals are mixed or unclear
 - urgency HIGH: strong immediate signal (breakout with volume, sharp VWAP reclaim)
 - urgency MEDIUM: clear directional signal, no immediate time pressure
 - urgency LOW: speculative or weakly confirmed signal; consider HOLD instead
@@ -193,7 +193,9 @@ class AIDecisionEngine:
         if risk_config is None:
             import config as _cfg
             risk_config = _cfg.risk
-        self._system_prompt = _build_system_prompt(risk_config)
+        import config as _cfg
+        min_conf = getattr(_cfg.agent, "min_confidence", 0.55)
+        self._system_prompt = _build_system_prompt(risk_config, min_confidence=min_conf)
 
     def decide(
         self,
