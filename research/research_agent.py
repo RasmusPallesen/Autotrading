@@ -591,16 +591,16 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
     all_items = (
         news_items + sec_items + reddit_items +
         scanner_items + insider_items + iv_items + fool_items +
-        clinical_items + breakout_items + institutional_items + intraday_items
+        breakout_items + institutional_items + intraday_items + momentum_items
     )
     logger.info(
         "Collected %d items -- news=%d, SEC=%d, Reddit=%d, "
         "Scanner=%d, Insider=%d, IV=%d, MotleyFool=%d, "
-        "Clinical=%d, Breakout=%d, Institutional=%d, Intraday=%d",
+        "Breakout=%d, Institutional=%d, Intraday=%d, Momentum=%d",
         len(all_items), len(news_items), len(sec_items),
         len(reddit_items), len(scanner_items), len(insider_items),
-        len(iv_items), len(fool_items), len(clinical_items),
-        len(breakout_items), len(institutional_items), len(intraday_items),
+        len(iv_items), len(fool_items),
+        len(breakout_items), len(institutional_items), len(intraday_items), len(momentum_items),
     )
 
     # Hot-symbol prioritization: force fresh Claude analysis for symbols
