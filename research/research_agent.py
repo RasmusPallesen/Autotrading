@@ -30,12 +30,11 @@ from data.market_scanner import MarketScanner
 from data.earnings_calendar import EarningsCalendar
 from data.insider_monitor import InsiderMonitor
 from data.iv_monitor import IVMonitor
-from data.motley_fool_fetcher import fetch_motley_fool
 from data.breakout_screener import BreakoutScreener
 from data.institutional_monitor import InstitutionalMonitor, get_ticker_cik_map
 from data.universe_scanner import UniverseScanner
 from data.intraday_monitor import IntradayMonitor, CORE_INTRADAY
-from data.clinical_catalyst_calendar import ClinicalCatalystCalendar
+from data.momentum_monitor import MomentumMonitor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,21 +66,6 @@ def is_market_open() -> bool:
     if now.weekday() >= 5:
         return False
     return _dtime(13, 30) <= now.time() <= _dtime(20, 0)
-
-
-# ── Email monitor throttling (hourly check) ────────────────────────────────────
-
-_last_email_check: datetime | None = None
-
-
-def should_check_email() -> bool:
-    """Return True if an hour has passed since last email check."""
-    global _last_email_check
-    now = datetime.now(timezone.utc)
-    if _last_email_check is None or (now - _last_email_check).total_seconds() >= 3600:
-        _last_email_check = now
-        return True
-    return False
 
 
 # ── Earnings calendar cache ────────────────────────────────────────────────────
@@ -200,71 +184,9 @@ def _get_symbol_detail(scanner, symbol: str) -> dict:
     return _symbol_detail_cache[symbol]
 
 
-# ── Motley Fool URL disk cache ─────────────────────────────────────────────────
-
-def _fool_url_cache_path() -> str:
-    logs_dir = os.path.join(os.getcwd(), "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-    return os.path.join(logs_dir, "motley_fool_url_cache.json")
-
-
-def _load_fool_url_cache() -> dict:
-    try:
-        p = _fool_url_cache_path()
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        logger.warning("Could not load Motley Fool URL cache: %s", e)
-    return {}
-
-
-def _save_fool_url_cache(cache: dict):
-    try:
-        with open(_fool_url_cache_path(), "w", encoding="utf-8") as f:
-            json.dump(cache, f)
-    except Exception as e:
-        logger.warning("Could not save Motley Fool URL cache: %s", e)
-
-
-def _fetch_motley_fool_cached(symbols: list) -> list:
-    """
-    Fetch Motley Fool articles, skipping any URL seen in the last 24 hours.
-    Persists seen URLs to disk so deduplication survives agent restarts.
-    """
-    url_cache = _load_fool_url_cache()
-    now = datetime.now(timezone.utc)
-    ttl = timedelta(hours=24)
-
-    # Evict expired URLs
-    fresh_cache = {
-        url: ts for url, ts in url_cache.items()
-        if now - datetime.fromisoformat(ts) < ttl
-    }
-
-    all_items = fetch_motley_fool(symbols)
-
-    new_items = []
-    for item in all_items:
-        if item.url not in fresh_cache:
-            new_items.append(item)
-            fresh_cache[item.url] = now.isoformat()
-
-    skipped = len(all_items) - len(new_items)
-    if skipped:
-        logger.debug("Motley Fool URL cache: skipped %d already-seen articles", skipped)
-
-    _save_fool_url_cache(fresh_cache)
-    logger.info(
-        "Motley Fool: %d new articles (%d cached/skipped)",
-        len(new_items), skipped,
-    )
-    return new_items
-
-
 # ── Main research cycle ────────────────────────────────────────────────────────
 
-def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, clinical_cal=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None, universe_scanner=None, intraday_monitor=None, universe_candidates=None, research_signals_map=None, email_monitor=None):
+def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None, universe_scanner=None, intraday_monitor=None, momentum_monitor=None, universe_candidates=None, research_signals_map=None):
     logger.info("=== Research cycle starting ===")
 
     base_symbols = config.watchlist.all_symbols
@@ -531,6 +453,7 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
                     risk_factors=sig.to_risk_factors(),
                     sources_used=1,
                     ttl_hours=sig.ttl_hours,
+                    signal_type="TECHNICAL",
                 )
                 # Also add as ResearchItem for Claude context in next cycle
                 intraday_items.append(ResearchItem(
@@ -573,12 +496,7 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
     )
 
-    # Motley Fool — 24h URL disk cache
-    try:
-        fool_items = _fetch_motley_fool_cached(all_symbols)
-    except Exception as e:
-        logger.warning("Motley Fool fetcher error: %s", e)
-        fool_items = []
+    fool_items = []  # Removed: HTML scraping too fragile for production use
 
     # Pre-breakout screener — detects accumulation BEFORE the price move.
     # Runs on 1-min bars already fetched for this cycle (no extra API cost).
@@ -636,89 +554,70 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
     elif not is_market_open():
         logger.debug("Breakout screener skipped -- market closed")
 
-    # Clinical catalyst monitor
-    # Clinical catalyst monitor — FDA/Phase 3/PDUFA dates for biotech symbols
-    # Cached 12h inside ClinicalCatalystCalendar. Generates ResearchItems so
-    # Claude treats upcoming readouts as high-risk context in its analysis.
-    clinical_items = []
-    clinical_catalyst_symbols = []
-    if clinical_cal:
+    # Multi-timeframe momentum monitor — 15-min + 1-hr bar signals (no Claude, fast)
+    momentum_items = []
+    if momentum_monitor and is_market_open():
         try:
-            clinical_events = clinical_cal.get_events(all_symbols)
-            pre_catalyst = clinical_cal.get_pre_catalyst_symbols(all_symbols)
-            high_risk = clinical_cal.get_high_risk_symbols(all_symbols)
-
-            if pre_catalyst:
-                logger.warning(
-                    "CLINICAL CATALYST WARNING (within %dd): %s",
-                    clinical_cal.__class__.__mro__[0].__init__.__defaults__ or [7],
-                    pre_catalyst,
-                )
-            if high_risk:
-                logger.warning(
-                    "HIGH-RISK BINARY CATALYST (PDUFA/Phase3): %s -- "
-                    "agent will block new positions",
-                    high_risk,
-                )
-                clinical_catalyst_symbols.extend(high_risk)
-
-            for sym, catalyst in clinical_events.items():
+            momentum_signals = momentum_monitor.scan(all_symbols, alpaca_config)
+            for sig in momentum_signals:
                 logger.info(
-                    "[%s] Clinical catalyst: %s %s in %d days (%s, %s)",
-                    sym, catalyst.catalyst_type, catalyst.drug_name,
-                    catalyst.days_until, catalyst.catalyst_date, catalyst.source,
+                    "[MOMENTUM] %s %s conviction=%.0f%%",
+                    sig.symbol, sig.signal_type, sig.conviction * 100,
                 )
-                clinical_items.append(ResearchItem(
-                    source="clinical_catalyst",
-                    symbol=sym,
-                    title=(
-                        f"[CLINICAL CATALYST|{catalyst.catalyst_type}] "
-                        f"{sym}: {catalyst.drug_name or catalyst.catalyst_type} "
-                        f"readout in {catalyst.days_until}d"
-                    ),
-                    summary=catalyst.to_prompt_text(),
-                    url=f"https://www.biopharmcatalyst.com/company/{sym}",
+                store.write_signal(
+                    symbol=sig.symbol,
+                    sentiment=sig.sentiment,
+                    conviction=sig.conviction,
+                    recommended_action=sig.recommended_action,
+                    summary=sig.summary,
+                    key_points=sig.key_points,
+                    risk_factors=sig.risk_factors,
+                    sources_used=1,
+                    ttl_hours=sig.ttl_hours,
+                    signal_type="MOMENTUM",
+                )
+                momentum_items.append(ResearchItem(
+                    source="momentum_monitor",
+                    symbol=sig.symbol,
+                    title=f"[MOMENTUM|{sig.signal_type}] {sig.symbol}: {sig.summary[:80]}",
+                    summary=sig.summary,
+                    url=f"https://finance.yahoo.com/quote/{sig.symbol}",
                     published_at=datetime.now(timezone.utc),
-                    raw={
-                        "catalyst_type": catalyst.catalyst_type,
-                        "catalyst_date": catalyst.catalyst_date.isoformat(),
-                        "days_until": catalyst.days_until,
-                        "risk_level": catalyst.risk_level,
-                        "confirmed": catalyst.confirmed,
-                        "drug_name": catalyst.drug_name,
-                        "is_pre_catalyst": catalyst.is_pre_catalyst_window,
-                        "is_high_risk": catalyst.is_high_risk,
-                    },
+                    raw={"signal_type": sig.signal_type, "conviction": sig.conviction},
                 ))
         except Exception as e:
-            logger.warning("Clinical catalyst monitor error: %s", e)
-
-    # Email newsletters — hourly check
-    email_items = []
-    if email_monitor and should_check_email():
-        try:
-            from collector import fetch_email_items
-            email_items = fetch_email_items(email_monitor, all_symbols)
-            logger.info("Email monitor: %d items from newsletters", len(email_items))
-        except Exception as e:
-            logger.warning("Email monitor error: %s", e)
+            logger.warning("Momentum monitor error: %s", e)
 
     all_items = (
         news_items + sec_items + reddit_items +
-        scanner_items + insider_items + iv_items + fool_items +
-        clinical_items + breakout_items + institutional_items + intraday_items +
-        email_items
+        scanner_items + insider_items + iv_items +
+        breakout_items + institutional_items + intraday_items + momentum_items
     )
     logger.info(
         "Collected %d items -- news=%d, SEC=%d, Reddit=%d, "
-        "Scanner=%d, Insider=%d, IV=%d, MotleyFool=%d, "
-        "Clinical=%d, Breakout=%d, Institutional=%d, Intraday=%d, Email=%d",
+        "Scanner=%d, Insider=%d, IV=%d, "
+        "Breakout=%d, Institutional=%d, Intraday=%d, Momentum=%d",
         len(all_items), len(news_items), len(sec_items),
         len(reddit_items), len(scanner_items), len(insider_items),
-        len(iv_items), len(fool_items), len(clinical_items),
-        len(breakout_items), len(institutional_items), len(intraday_items),
-        len(email_items),
+        len(iv_items), len(breakout_items), len(institutional_items),
+        len(intraday_items), len(momentum_items),
     )
+
+    # Hot-symbol prioritization: force fresh Claude analysis for symbols
+    # that have an active technical/momentum signal this cycle.
+    hot_symbols = set(discovered_symbols)
+    for sym, sig in (research_signals_map or {}).items():
+        if (
+            sig.get("signal_type") in ("TECHNICAL", "MOMENTUM")
+            and float(sig.get("conviction", 0)) >= 0.60
+        ):
+            hot_symbols.add(sym)
+    if hot_symbols:
+        force_invalidate_symbols |= hot_symbols
+        logger.info(
+            "Hot symbols (forcing fresh analysis): %s",
+            sorted(hot_symbols),
+        )
 
     if not all_items:
         logger.warning("No research items collected this cycle")
@@ -737,8 +636,6 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
     for r in reports:
         if r.symbol in binary_catalyst_symbols:
             ttl = 6
-        elif r.symbol in clinical_catalyst_symbols:
-            ttl = 8  # Clinical catalysts get longer TTL — risk window spans days
         elif r.symbol in discovered_symbols:
             ttl = 2
         else:
@@ -759,6 +656,7 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
             risk_factors=r.risk_factors,
             sources_used=r.sources_used,
             ttl_hours=ttl,
+            signal_type="FUNDAMENTAL",
         )
 
     if high_conviction:
@@ -815,6 +713,7 @@ def run_fast_intraday_cycle(intraday_monitor, store, universe_candidates, resear
                     ],
                     sources_used=1,
                     ttl_hours=sig.ttl_hours,
+                    signal_type="TECHNICAL",
                 )
                 logger.info(
                     "[%s] %s | conviction=%.0f%% | %s | price=$%.2f | chg_1h=%+.1f%%",
@@ -839,47 +738,32 @@ def main():
     logger.info("  Conviction threshold: %.0f%%", CONVICTION_THRESHOLD * 100)
     logger.info("  Watchlist: %d symbols", len(config.watchlist.all_symbols))
     logger.info(
-        "  Cache TTLs: earnings=%dh | insider=%dh | IV=daily | fool=24h | analysis=%sh",
+        "  Cache TTLs: earnings=%dh | insider=%dh | IV=daily | analysis=%sh",
         EARNINGS_CACHE_TTL_HOURS, INSIDER_CACHE_TTL_HOURS,
         os.getenv("ANALYSIS_CACHE_TTL_HOURS", "4"),
     )
 
-    analyst         = ResearchAnalyst(config.anthropic)
-    store           = ResearchStore()
-    breakout_screener       = BreakoutScreener()
-    institutional_monitor   = InstitutionalMonitor()
-    universe_scanner        = UniverseScanner(
+    analyst               = ResearchAnalyst(config.anthropic)
+    store                 = ResearchStore()
+    breakout_screener     = BreakoutScreener()
+    institutional_monitor = InstitutionalMonitor()
+    universe_scanner      = UniverseScanner(
         alpaca_api_key=os.getenv("ALPACA_API_KEY", ""),
         alpaca_secret_key=os.getenv("ALPACA_SECRET_KEY", ""),
         paper=os.getenv("ALPACA_PAPER", "true").lower() == "true",
     )
-    intraday_monitor        = IntradayMonitor()
-    _universe_candidates    = []   # shared between universe scan and intraday monitor
-    _last_universe_scan     = None # timestamp of last universe scan
-    earnings_cal    = EarningsCalendar()
-    insider_monitor = InsiderMonitor()
-    iv_monitor      = IVMonitor()
-    clinical_cal    = ClinicalCatalystCalendar()
-    scanner         = MarketScanner(
+    intraday_monitor      = IntradayMonitor()
+    momentum_monitor      = MomentumMonitor()
+    _universe_candidates  = []
+    _last_universe_scan   = None
+    earnings_cal          = EarningsCalendar()
+    insider_monitor       = InsiderMonitor()
+    iv_monitor            = IVMonitor()
+    scanner               = MarketScanner(
         alpaca_api_key=os.getenv("ALPACA_API_KEY", ""),
         alpaca_secret_key=os.getenv("ALPACA_SECRET_KEY", ""),
         paper=os.getenv("ALPACA_PAPER", "true").lower() == "true",
     )
-
-    # Email monitor for newsletter ingestion (Gmail API)
-    email_monitor = None
-    credentials_path = os.path.join(os.getcwd(), "secrets", "gmail_credentials.json")
-    token_path = os.path.join(os.getcwd(), "secrets", "gmail_token.json")
-    if os.path.exists(credentials_path):
-        try:
-            from data.email_monitor import EmailMonitor
-            email_monitor = EmailMonitor(credentials_path, token_path)
-            logger.info("Email monitor initialized (Gmail API)")
-        except Exception as e:
-            logger.warning("Email monitor init failed: %s", e)
-            logger.warning("Email newsletters will not be ingested this session")
-    else:
-        logger.info("Gmail credentials not found at %s -- email ingestion disabled", credentials_path)
 
     running = True
 
@@ -939,15 +823,14 @@ def main():
                 run_research_cycle(
                     analyst, store, scanner,
                     earnings_cal, insider_monitor, iv_monitor,
-                    clinical_cal=clinical_cal,
                     breakout_screener=breakout_screener,
                     alpaca_config=config.alpaca,
                     institutional_monitor=institutional_monitor,
                     universe_scanner=universe_scanner,
                     intraday_monitor=intraday_monitor,
+                    momentum_monitor=momentum_monitor,
                     universe_candidates=_universe_candidates,
                     research_signals_map=_research_signals_map,
-                    email_monitor=email_monitor,
                 )
                 _last_deep_research = datetime.now(timezone.utc)
             except Exception as e:
@@ -980,8 +863,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# ── Clinical catalyst integration patch ───────────────────────────────────────
-# Appended to existing research_agent.py.
-# Replace the run_research_cycle() call in main() with run_research_cycle_v2()
-# which passes clinical_cal through, or patch run_research_cycle to accept it.
