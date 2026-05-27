@@ -122,10 +122,7 @@ def fetch_alpaca_positions() -> list:
 
 @st.cache_data(ttl=60)
 def calc_unsettled_proceeds() -> float:
-    """
-    Sum SELL notionals from the last 5 calendar days whose T+2 settlement
-    date is still in the future. Returns 0.0 if executions table is unavailable.
-    """
+    """Sum SELL notionals from the last 5 days whose T+2 settlement date is still in the future."""
     today = datetime.now(timezone.utc).date()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
     try:
@@ -144,6 +141,34 @@ def calc_unsettled_proceeds() -> float:
         return total
     except Exception:
         return 0.0
+
+
+@st.cache_data(ttl=60)
+def get_settlement_breakdown() -> list:
+    """Returns list of {date_str, amount} per future settlement date, sorted ascending."""
+    from collections import defaultdict
+    today = datetime.now(timezone.utc).date()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    try:
+        df = query(
+            "SELECT ts, notional FROM executions "
+            "WHERE side = 'SELL' AND ts > ? AND notional IS NOT NULL",
+            params=(cutoff,),
+        )
+        if df.empty:
+            return []
+        buckets = defaultdict(float)
+        for _, row in df.iterrows():
+            trade_date = pd.to_datetime(row["ts"], utc=True).date()
+            settle = settlement_date(trade_date)
+            if settle > today:
+                buckets[settle] += float(row["notional"])
+        return [
+            {"date": d, "date_str": d.strftime("%a %-d %b"), "amount": v}
+            for d, v in sorted(buckets.items())
+        ]
+    except Exception:
+        return []
 
 
 # ── Data loaders ───────────────────────────────────────────────────────────────
@@ -301,6 +326,14 @@ if account:
 
     unsettled = calc_unsettled_proceeds()
     settled   = max(cash - unsettled, 0.0)
+    breakdown = get_settlement_breakdown()
+    if breakdown:
+        help_lines = "\n".join(
+            f"Settles {b['date_str']}: ${b['amount']:,.2f}" for b in breakdown
+        )
+        settled_help = f"T+2 pending: ${unsettled:,.2f}\n\n{help_lines}"
+    else:
+        settled_help = "All cash is settled and available to deploy."
 
     p1, p2, p3, p4, p5, p6 = st.columns(6)
     p1.metric("Portfolio Value", f"${portfolio_val:,.2f}")
@@ -311,7 +344,7 @@ if account:
         f"${settled:,.2f}",
         delta=f"-${unsettled:,.2f} T+2 pending" if unsettled > 0.01 else None,
         delta_color="off",
-        help="Cash available to deploy now. Excludes proceeds from recent sells that haven't settled (T+2).",
+        help=settled_help,
     )
     p4.metric("Open Exposure",    f"${open_exposure:,.2f}",help="Current market value of open positions")
     p5.metric("Unrealised P&L",   f"${open_pl:,.2f}",      delta=f"{open_pl_pct:.2f}%")

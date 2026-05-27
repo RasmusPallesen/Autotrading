@@ -441,6 +441,37 @@ def calc_unsettled_proceeds() -> float:
         return 0.0
 
 
+@st.cache_data(ttl=60)
+def get_settlement_breakdown() -> list:
+    """
+    Returns list of {date, date_str, amount} for each future settlement date,
+    sorted ascending. Shows the user exactly when each batch of T+2 funds clears.
+    """
+    from collections import defaultdict
+    today = datetime.now(timezone.utc).date()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    try:
+        df = query(
+            "SELECT ts, notional FROM executions "
+            "WHERE side = 'SELL' AND ts > ? AND notional IS NOT NULL",
+            params=(cutoff,),
+        )
+        if df.empty:
+            return []
+        buckets = defaultdict(float)
+        for _, row in df.iterrows():
+            trade_date = pd.to_datetime(row["ts"], utc=True).date()
+            settle = settlement_date(trade_date)
+            if settle > today:
+                buckets[settle] += float(row["notional"])
+        return [
+            {"date": d, "date_str": d.strftime("%a %-d %b"), "amount": v}
+            for d, v in sorted(buckets.items())
+        ]
+    except Exception:
+        return []
+
+
 # ── Data loaders ───────────────────────────────────────────────────────────────
 def load_decisions() -> pd.DataFrame:
     df = query("SELECT * FROM decisions ORDER BY id DESC LIMIT 200")
@@ -788,12 +819,20 @@ if account:
     dpnl_cls = "delta-pos" if day_pnl >= 0 else "delta-neg"
     opnl_cls = "delta-pos" if open_pl >= 0 else "delta-neg"
 
-    unsettled = calc_unsettled_proceeds()
-    settled   = max(cash - unsettled, 0.0)
-    t2_html   = (
-        f'<div class="metric-delta" style="color:#6b7280;">-${unsettled:,.2f} T+2</div>'
-        if unsettled > 0.01 else ""
-    )
+    unsettled  = calc_unsettled_proceeds()
+    settled    = max(cash - unsettled, 0.0)
+    breakdown  = get_settlement_breakdown()
+    if breakdown:
+        detail_lines = "".join(
+            f'<div style="font-size:10px;color:#6b7280;">Settles {b["date_str"]}: ${b["amount"]:,.2f}</div>'
+            for b in breakdown
+        )
+        t2_html = (
+            f'<div style="font-size:10px;color:#9ca3af;margin-top:3px;">'
+            f'T+2 pending: ${unsettled:,.2f}</div>{detail_lines}'
+        )
+    else:
+        t2_html = ""
 
     st.markdown(f"""
     <div class="metric-grid">
