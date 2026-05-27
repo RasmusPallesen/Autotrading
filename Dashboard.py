@@ -7,11 +7,12 @@ Run on Railway: automatically via Procfile
 import os
 import subprocess
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import requests
 import streamlit as st
+from risk.settlement_tracker import settlement_date
 
 st.set_page_config(
     page_title="Trading Agent",
@@ -117,6 +118,32 @@ def fetch_alpaca_positions() -> list:
         return resp.json()
     except Exception:
         return []
+
+
+@st.cache_data(ttl=60)
+def calc_unsettled_proceeds() -> float:
+    """
+    Sum SELL notionals from the last 5 calendar days whose T+2 settlement
+    date is still in the future. Returns 0.0 if executions table is unavailable.
+    """
+    today = datetime.now(timezone.utc).date()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    try:
+        df = query(
+            "SELECT ts, notional FROM executions "
+            "WHERE side = 'SELL' AND ts > ? AND notional IS NOT NULL",
+            params=(cutoff,),
+        )
+        if df.empty:
+            return 0.0
+        total = 0.0
+        for _, row in df.iterrows():
+            trade_date = pd.to_datetime(row["ts"], utc=True).date()
+            if settlement_date(trade_date) > today:
+                total += float(row["notional"])
+        return total
+    except Exception:
+        return 0.0
 
 
 # ── Data loaders ───────────────────────────────────────────────────────────────
@@ -272,10 +299,20 @@ if account:
     open_pl       = sum(float(p.get("unrealized_pl", 0)) for p in positions)
     open_pl_pct   = (open_pl / (open_exposure - open_pl) * 100) if (open_exposure - open_pl) > 0 else 0
 
+    unsettled = calc_unsettled_proceeds()
+    settled   = max(cash - unsettled, 0.0)
+
     p1, p2, p3, p4, p5, p6 = st.columns(6)
-    p1.metric("Portfolio Value",  f"${portfolio_val:,.2f}")
-    p2.metric("Cash Available",   f"${cash:,.2f}",         help="Settled cash ready to deploy")
-    p3.metric("Buying Power",     f"${buying_power:,.2f}", help="Total purchasing power available")
+    p1.metric("Portfolio Value", f"${portfolio_val:,.2f}")
+    p2.metric("Cash",            f"${cash:,.2f}",
+              help="Total cash balance including T+2 unsettled sale proceeds")
+    p3.metric(
+        "Settled Cash",
+        f"${settled:,.2f}",
+        delta=f"-${unsettled:,.2f} T+2 pending" if unsettled > 0.01 else None,
+        delta_color="off",
+        help="Cash available to deploy now. Excludes proceeds from recent sells that haven't settled (T+2).",
+    )
     p4.metric("Open Exposure",    f"${open_exposure:,.2f}",help="Current market value of open positions")
     p5.metric("Unrealised P&L",   f"${open_pl:,.2f}",      delta=f"{open_pl_pct:.2f}%")
     p6.metric("Day P&L",          f"${day_pnl:,.2f}",      delta=f"{day_pnl_pct:.2f}%")

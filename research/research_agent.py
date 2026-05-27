@@ -35,6 +35,7 @@ from data.institutional_monitor import InstitutionalMonitor, get_ticker_cik_map
 from data.universe_scanner import UniverseScanner
 from data.intraday_monitor import IntradayMonitor, CORE_INTRADAY
 from data.momentum_monitor import MomentumMonitor
+from data.ipo_monitor import IpoMonitor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -186,7 +187,7 @@ def _get_symbol_detail(scanner, symbol: str) -> dict:
 
 # ── Main research cycle ────────────────────────────────────────────────────────
 
-def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, clinical_cal=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None, universe_scanner=None, intraday_monitor=None, universe_candidates=None, research_signals_map=None):
+def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None, universe_scanner=None, intraday_monitor=None, momentum_monitor=None, ipo_monitor=None, universe_candidates=None, research_signals_map=None):
     logger.info("=== Research cycle starting ===")
 
     base_symbols = config.watchlist.all_symbols
@@ -588,19 +589,63 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
         except Exception as e:
             logger.warning("Clinical catalyst monitor error: %s", e)
 
+    # Upcoming IPOs — write CATALYST signals directly, cached 24h (no Claude call)
+    ipo_count = 0
+    if ipo_monitor:
+        try:
+            upcoming_ipos = ipo_monitor.fetch_upcoming()
+            for ipo in upcoming_ipos:
+                sym = ipo.get("symbol") or ipo.get("ticker", "")
+                if not sym:
+                    continue
+                ipo_date   = ipo.get("date") or ipo.get("ipo_date", "unknown date")
+                name       = ipo.get("name") or ipo.get("company_name", sym)
+                price_low  = ipo.get("price_low") or ipo.get("low_price", "?")
+                price_high = ipo.get("price_high") or ipo.get("high_price", "?")
+                price_range = f"${price_low}–${price_high}"
+                exchange   = ipo.get("exchange", "")
+                store.write_signal(
+                    symbol=sym,
+                    sentiment="BULLISH",
+                    conviction=0.68,
+                    recommended_action="WATCH",
+                    summary=(
+                        f"Upcoming IPO: {name} ({sym}) expected {ipo_date}"
+                        + (f" on {exchange}" if exchange else "")
+                        + f". Price range {price_range}."
+                    ),
+                    key_points=[
+                        f"IPO date: {ipo_date}",
+                        f"Exchange: {exchange}" if exchange else "Exchange: TBD",
+                        f"Expected price range: {price_range}",
+                    ],
+                    risk_factors=[
+                        "IPO-day volatility — price discovery can swing ±20%",
+                        "No post-IPO price history for technical analysis",
+                    ],
+                    sources_used=1,
+                    ttl_hours=48,
+                    signal_type="CATALYST",
+                )
+                logger.info("[IPO] %s (%s) — expected %s, price %s", name, sym, ipo_date, price_range)
+                ipo_count += 1
+        except Exception as e:
+            logger.warning("IPO monitor error: %s", e)
+
     all_items = (
         news_items + sec_items + reddit_items +
         scanner_items + insider_items + iv_items + fool_items +
-        clinical_items + breakout_items + institutional_items + intraday_items
+        breakout_items + institutional_items + intraday_items + momentum_items
     )
     logger.info(
         "Collected %d items -- news=%d, SEC=%d, Reddit=%d, "
         "Scanner=%d, Insider=%d, IV=%d, MotleyFool=%d, "
-        "Clinical=%d, Breakout=%d, Institutional=%d, Intraday=%d",
+        "Breakout=%d, Institutional=%d, Intraday=%d, Momentum=%d, IPO=%d",
         len(all_items), len(news_items), len(sec_items),
         len(reddit_items), len(scanner_items), len(insider_items),
-        len(iv_items), len(fool_items), len(clinical_items),
-        len(breakout_items), len(institutional_items), len(intraday_items),
+        len(iv_items), len(fool_items),
+        len(breakout_items), len(institutional_items), len(intraday_items), len(momentum_items),
+        ipo_count,
     )
 
     # Hot-symbol prioritization: force fresh Claude analysis for symbols
@@ -754,6 +799,7 @@ def main():
     )
     intraday_monitor      = IntradayMonitor()
     momentum_monitor      = MomentumMonitor()
+    ipo_monitor           = IpoMonitor() if os.getenv("MASSIVE_API_KEY") else None
     _universe_candidates  = []
     _last_universe_scan   = None
     earnings_cal          = EarningsCalendar()
@@ -829,6 +875,7 @@ def main():
                     universe_scanner=universe_scanner,
                     intraday_monitor=intraday_monitor,
                     momentum_monitor=momentum_monitor,
+                    ipo_monitor=ipo_monitor,
                     universe_candidates=_universe_candidates,
                     research_signals_map=_research_signals_map,
                 )
