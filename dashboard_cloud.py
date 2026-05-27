@@ -7,11 +7,12 @@ touch-friendly tap targets, no horizontal scroll.
 
 import os
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import requests
 import streamlit as st
+from risk.settlement_tracker import settlement_date
 
 st.set_page_config(
     page_title="Trading Agent",
@@ -417,6 +418,29 @@ def fetch_positions() -> list:
         return []
 
 
+@st.cache_data(ttl=60)
+def calc_unsettled_proceeds() -> float:
+    """Sum SELL notionals from the last 5 days whose T+2 settlement date is still in the future."""
+    today = datetime.now(timezone.utc).date()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    try:
+        df = query(
+            "SELECT ts, notional FROM executions "
+            "WHERE side = 'SELL' AND ts > ? AND notional IS NOT NULL",
+            params=(cutoff,),
+        )
+        if df.empty:
+            return 0.0
+        total = 0.0
+        for _, row in df.iterrows():
+            trade_date = pd.to_datetime(row["ts"], utc=True).date()
+            if settlement_date(trade_date) > today:
+                total += float(row["notional"])
+        return total
+    except Exception:
+        return 0.0
+
+
 # ── Data loaders ───────────────────────────────────────────────────────────────
 def load_decisions() -> pd.DataFrame:
     df = query("SELECT * FROM decisions ORDER BY id DESC LIMIT 200")
@@ -764,6 +788,13 @@ if account:
     dpnl_cls = "delta-pos" if day_pnl >= 0 else "delta-neg"
     opnl_cls = "delta-pos" if open_pl >= 0 else "delta-neg"
 
+    unsettled = calc_unsettled_proceeds()
+    settled   = max(cash - unsettled, 0.0)
+    t2_html   = (
+        f'<div class="metric-delta" style="color:#6b7280;">-${unsettled:,.2f} T+2</div>'
+        if unsettled > 0.01 else ""
+    )
+
     st.markdown(f"""
     <div class="metric-grid">
         <div class="metric-card">
@@ -780,8 +811,9 @@ if account:
             <div class="metric-value">${cash:,.2f}</div>
         </div>
         <div class="metric-card">
-            <div class="metric-label">Buying Power</div>
-            <div class="metric-value">${buying_power:,.2f}</div>
+            <div class="metric-label">Settled Cash</div>
+            <div class="metric-value">${settled:,.2f}</div>
+            {t2_html}
         </div>
         <div class="metric-card">
             <div class="metric-label">Open Exposure</div>
