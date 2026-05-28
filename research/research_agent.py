@@ -50,7 +50,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("research_agent")
 
-RESEARCH_INTERVAL      = int(os.getenv("RESEARCH_INTERVAL_SECONDS", "900"))  # Deep research: 15 min
+RESEARCH_INTERVAL      = int(os.getenv("RESEARCH_INTERVAL_SECONDS", "1800"))  # Deep research: 30 min
 INTRADAY_INTERVAL      = int(os.getenv("INTRADAY_INTERVAL_SECONDS", "120"))  # Fast momentum: 2 min (short-term cycling)
 CONVICTION_THRESHOLD   = float(os.getenv("CONVICTION_THRESHOLD", "0.70"))
 SCANNER_MIN_SCORE      = float(os.getenv("SCANNER_MIN_SCORE", "0.50"))

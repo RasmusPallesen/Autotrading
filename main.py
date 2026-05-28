@@ -286,17 +286,17 @@ RESEARCH_GATE_THRESHOLD = 0.45  # CHANGED: was 0.55; lowered to match agent.min_
 def get_dynamic_symbols(
     research_store: ResearchStore,
     full_universe: list,
+    positions_map: dict = None,
     min_conviction: float = RESEARCH_GATE_THRESHOLD,
 ) -> tuple:
     """
     Build the active trading symbol list from research signals.
 
     Logic:
-    - All 42 universe symbols are eligible
-    - A symbol is included if:
-        a) Research agent has an active signal with conviction >= min_conviction, OR
-        b) It is a scanner discovery with conviction >= SCANNER_TRADE_THRESHOLD
-    - Symbols with no research signal or low conviction are skipped this tick
+    - Held positions are ALWAYS included (can't miss a sell signal)
+    - A symbol is also included if it has an active research signal with
+      conviction >= min_conviction, OR is a scanner discovery
+    - Everything else is skipped to reduce Claude API calls
     - Returns (active_symbols, discovered_symbols, research_signals_map)
     """
     research_signals = {}
@@ -312,20 +312,17 @@ def get_dynamic_symbols(
         # Fall back to full universe if DB unavailable
         return full_universe, [], {}
 
-    # Gate universe symbols through research signals
-    core_watchlist = set(config.watchlist.stocks)
+    # Held positions are always evaluated regardless of signal strength
+    held_symbols = set(positions_map.keys()) if positions_map else set()
+
     for symbol in full_universe:
         signal = research_signals.get(symbol)
-        if symbol in core_watchlist:
-            # Core watchlist ALWAYS evaluates — never gated out
+        if symbol in held_symbols:
+            # Always evaluate held positions — never gate out a potential sell
             active_symbols.append(symbol)
-            if signal:
-                conviction = float(signal.get("conviction", 0))
-                if conviction < min_conviction:
-                    logger.debug("[%s] Core symbol included despite low conviction %.0f%%", symbol, conviction*100)
+            logger.debug("[%s] Included (held position)", symbol)
         elif signal:
             conviction = float(signal.get("conviction", 0))
-            sentiment = signal.get("sentiment", "NEUTRAL")
             if conviction >= min_conviction:
                 active_symbols.append(symbol)
             else:
@@ -414,6 +411,7 @@ def run_loop(
         all_symbols, discovered_symbols, research_signals = get_dynamic_symbols(
             research_store,
             full_universe,
+            positions_map=positions_map,
             min_conviction=RESEARCH_GATE_THRESHOLD,
         )
 

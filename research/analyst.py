@@ -60,9 +60,10 @@ def _save_cache(cache: dict):
 
 
 def _make_key(symbol: str, items) -> str:
-    titles = sorted(item.title for item in items if item.title)
-    raw = symbol + "|" + "|".join(titles[:10])
-    return hashlib.md5(raw.encode()).hexdigest()
+    # Key on symbol + 4-hour time bucket so the same symbol always hits
+    # cache within the same window, regardless of changing news headlines.
+    bucket = int(datetime.now(timezone.utc).timestamp() // (ANALYSIS_CACHE_TTL_HOURS * 3600))
+    return hashlib.md5(f"{symbol}|{bucket}".encode()).hexdigest()
 
 
 def _is_cache_entry_fresh(entry: dict) -> bool:
@@ -262,6 +263,37 @@ class ResearchAnalyst:
                 "[%s] CACHE BYPASSED -- forced re-analysis (post-earnings beat/miss)",
                 symbol,
             )
+        else:
+            # Check if any item is newer than the last cached analysis for this symbol.
+            # If nothing new has arrived, skip Claude — return the stale entry as-is
+            # rather than paying for an identical result.
+            stale_entry = _CACHE.get(key)
+            if stale_entry:
+                cached_at_str = stale_entry.get("cached_at", "")
+                try:
+                    cached_at = datetime.fromisoformat(cached_at_str)
+                    newest = max(
+                        (i.published_at for i in items if getattr(i, "published_at", None)),
+                        default=None,
+                    )
+                    if newest is None or newest <= cached_at:
+                        logger.info(
+                            "[%s] CACHE REUSE -- no new items since last analysis, skipping Claude",
+                            symbol,
+                        )
+                        return ResearchReport(
+                            symbol=symbol,
+                            overall_sentiment=stale_entry.get("overall_sentiment", "NEUTRAL"),
+                            conviction=float(stale_entry.get("conviction", 0.0)),
+                            summary=stale_entry.get("summary", ""),
+                            key_points=stale_entry.get("key_points", []),
+                            risk_factors=stale_entry.get("risk_factors", []),
+                            recommended_action=stale_entry.get("recommended_action", "HOLD"),
+                            sources_used=stale_entry.get("sources_used", 0),
+                            confidence_explanation=stale_entry.get("confidence_explanation", ""),
+                        )
+                except Exception:
+                    pass  # Date parse error — proceed with Claude call
 
         logger.info("[%s] Calling Claude for analysis", symbol)
 
