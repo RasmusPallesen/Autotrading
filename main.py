@@ -21,6 +21,7 @@ from storage.trade_store import TradeStore
 from storage.research_store import ResearchStore
 from data.massive_indicators import MassiveIndicatorFetcher
 from data.earnings_calendar import EarningsCalendar
+from data.alpaca_stream import AlpacaBarStream
 try:
     from notifier import notify_startup, notify_shutdown
     _NOTIFY = True
@@ -403,6 +404,7 @@ def run_loop(
     earnings_cal=None,
     clinical_cal=None,
     fast_retry_symbols: list = None,
+    bar_stream: "AlpacaBarStream | None" = None,
 ):
     logger.info("--- Agent loop tick ---")
 
@@ -449,12 +451,34 @@ def run_loop(
         len(discovered_symbols),
     )
 
-    # 3. Fetch market data for all symbols
-    bars = data_fetcher.get_bars(
-        symbols=all_symbols,
-        lookback_bars=config.agent.indicator_lookback,
-        timeframe="1Min",
-    )
+    # 3. Sync stream subscriptions with active symbol list
+    if bar_stream:
+        held_set = set(positions_map.keys())
+        bar_stream.update_symbols(all_symbols, held_symbols=held_set)
+
+    # 3b. Fetch market data — prefer live stream buffer, fall back to REST
+    bars: dict = {}
+    rest_needed: list = []
+    if bar_stream:
+        for sym in all_symbols:
+            df = bar_stream.get_bars_df(sym)
+            if df is not None and len(df) >= 10:
+                bars[sym] = df
+                logger.debug("[BARS] Stream buffer for %s (%d bars)", sym, len(df))
+            else:
+                rest_needed.append(sym)
+    else:
+        rest_needed = list(all_symbols)
+
+    if rest_needed:
+        rest_bars = data_fetcher.get_bars(
+            symbols=rest_needed,
+            lookback_bars=config.agent.indicator_lookback,
+            timeframe="1Min",
+        )
+        bars.update(rest_bars)
+        if bar_stream and rest_needed:
+            logger.debug("[BARS] REST fallback for %d symbols (buffers not yet full)", len(rest_needed))
 
     # 4. Compute technical signals
     snapshots = []
@@ -811,6 +835,107 @@ def run_loop(
     return high_urgency_blocked
 
 
+def _drain_hot_queue(
+    bar_stream: "AlpacaBarStream",
+    data_fetcher: AlpacaDataFetcher,
+    ai_engine: AIDecisionEngine,
+    executor: AlpacaExecutor,
+    risk: RiskManager,
+    store: TradeStore,
+    research_store,
+    earnings_cal,
+) -> None:
+    """
+    Process any hot-symbol events that arrived since the last tick.
+    Each hot event triggers a single-symbol decide → risk → execute pass
+    without waiting for the next 5-minute tick.
+
+    We cap at 5 hot events per drain call to prevent a cascade of rapid
+    events (e.g. a volatile bar run) from saturating the Claude API.
+    """
+    processed = 0
+    while processed < 5:
+        try:
+            symbol, bar_dict = bar_stream.hot_queue.get_nowait()
+        except Exception:
+            break
+
+        logger.info("[HOT PATH] %s triggered fast eval (close=%.2f)", symbol, bar_dict["close"])
+
+        try:
+            df = bar_stream.get_bars_df(symbol)
+            if df is None or len(df) < 10:
+                logger.debug("[HOT PATH] %s buffer too small, skipping", symbol)
+                continue
+
+            snapshot = compute_signals(symbol, df)
+            if not snapshot:
+                continue
+
+            # Fetch portfolio state (lightweight — cached by SDK internally)
+            try:
+                portfolio  = data_fetcher.get_account()
+                positions  = data_fetcher.get_positions()
+            except Exception as e:
+                logger.warning("[HOT PATH] Portfolio fetch failed: %s", e)
+                continue
+
+            positions_map = {p["symbol"]: p for p in positions}
+
+            # Research signal if available
+            research_signal = None
+            try:
+                if research_store:
+                    research_signal = research_store.get_signal(symbol)
+            except Exception:
+                pass
+
+            # Earnings check
+            earnings_events = {}
+            if earnings_cal:
+                try:
+                    earnings_events = earnings_cal.get_events([symbol])
+                except Exception:
+                    pass
+
+            decision = ai_engine.decide(
+                snapshot, portfolio, positions_map.get(symbol),
+                research_signal=research_signal,
+                earnings_event=earnings_events.get(symbol),
+            )
+
+            if not decision or decision.action == "HOLD":
+                logger.debug("[HOT PATH] %s → HOLD (%.0f%% conf)", symbol, (decision.confidence if decision else 0) * 100)
+                continue
+
+            logger.info(
+                "[HOT PATH] %s → %s (conf=%.0f%%, urgency=%s)",
+                symbol, decision.action, decision.confidence * 100,
+                getattr(decision, "urgency", "?"),
+            )
+
+            # Risk check + execution (same path as normal loop)
+            verdict = risk.check(decision, portfolio, positions_map)
+            if verdict.approved:
+                price = data_fetcher.get_latest_price(symbol)
+                if decision.action == "BUY" and symbol not in positions_map:
+                    stop, target = risk.compute_stop_and_target(price, decision)
+                    result = executor.buy(symbol, verdict.position_size_usd, stop, target)
+                    store.log_execution(symbol, "BUY", verdict.position_size_usd, price, stop, target)
+                    logger.info("[HOT PATH] BUY %s executed: %s", symbol, result)
+                elif decision.action == "SELL" and symbol in positions_map:
+                    result = executor.sell(symbol, positions_map[symbol]["qty"])
+                    store.log_execution(symbol, "SELL", float(positions_map[symbol]["market_value"]), price, None, None)
+                    logger.info("[HOT PATH] SELL %s executed: %s", symbol, result)
+            else:
+                logger.info("[HOT PATH] %s %s blocked: %s", symbol, decision.action, verdict.reason)
+
+        except Exception as e:
+            logger.warning("[HOT PATH] Error processing %s: %s", symbol, e)
+
+        processed += 1
+
+
 def main():
     validate_config()
 
@@ -829,6 +954,20 @@ def main():
     risk            = RiskManager(config.risk)
     store           = TradeStore()
     research_store  = ResearchStore()
+
+    # Live bar stream (WebSocket) — pre-populates bar buffers so the trading
+    # loop can read fresh data without REST calls, and fires hot-path evals.
+    bar_stream: AlpacaBarStream | None = None
+    try:
+        bar_stream = AlpacaBarStream(
+            api_key=config.alpaca.api_key,
+            secret_key=config.alpaca.secret_key,
+            symbols=config.watchlist.all_symbols,
+        )
+        bar_stream.start()
+    except Exception as e:
+        logger.warning("Live bar stream unavailable — falling back to REST polling: %s", e)
+        bar_stream = None
 
     try:
         account = data_fetcher.get_account()
@@ -867,6 +1006,7 @@ def main():
                 high_urgency_blocked = run_loop(
                     data_fetcher, None, ai_engine, executor, risk,
                     store, research_store, massive_fetcher, earnings_cal, clinical_cal,
+                    bar_stream=bar_stream,
                 )
 
                 # Fast retry: if HIGH urgency BUYs were blocked, wait 60s
@@ -882,8 +1022,6 @@ def main():
 
                     if running and is_market_open():
                         try:
-                            # Temporarily override watchlist to only retry blocked symbols
-                            # by injecting them as high-conviction research signals
                             logger.info(
                                 "--- Fast retry tick for %s ---",
                                 high_urgency_blocked,
@@ -893,6 +1031,7 @@ def main():
                                 store, research_store, massive_fetcher,
                                 earnings_cal, clinical_cal,
                                 fast_retry_symbols=high_urgency_blocked,
+                                bar_stream=bar_stream,
                             )
                         except Exception as e:
                             logger.warning("Fast retry error: %s", e)
@@ -903,8 +1042,20 @@ def main():
             logger.info("Market closed -- agent paused (NYSE open 15:30-22:00 Copenhagen time weekdays)")
 
         if running:
-            time.sleep(config.agent.loop_interval_seconds)
+            # Sleep in 5-second slices so we can drain the hot queue between ticks.
+            interval = config.agent.loop_interval_seconds
+            elapsed = 0
+            while running and elapsed < interval:
+                time.sleep(5)
+                elapsed += 5
+                if bar_stream and is_market_open():
+                    _drain_hot_queue(
+                        bar_stream, data_fetcher, ai_engine, executor, risk,
+                        store, research_store, earnings_cal,
+                    )
 
+    if bar_stream:
+        bar_stream.stop()
     store.close()
     research_store.close()
     logger.info("Trading agent shut down cleanly.")
