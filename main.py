@@ -282,6 +282,11 @@ def validate_config():
 # Minimum research conviction to include a symbol in the trading cycle
 RESEARCH_GATE_THRESHOLD = 0.45  # CHANGED: was 0.55; lowered to match agent.min_confidence
 
+# Max unsignaled symbols to evaluate per tick (rotating round-robin through full universe)
+MAX_UNSIGNALED_PER_TICK = 10
+
+_unsignaled_offset: int = 0  # rotating index for unsignaled symbol batching
+
 
 def get_dynamic_symbols(
     research_store: ResearchStore,
@@ -294,15 +299,19 @@ def get_dynamic_symbols(
 
     Logic:
     - Held positions are ALWAYS included (can't miss a sell signal)
-    - A symbol is also included if it has an active research signal with
-      conviction >= min_conviction, OR is a scanner discovery
-    - Everything else is skipped to reduce Claude API calls
+    - Symbols with adequate research conviction (>= min_conviction) are included
+    - Symbols with active but LOW conviction signals are excluded (research flagged them)
+    - Symbols with NO signal are unknown (not bad) — up to MAX_UNSIGNALED_PER_TICK
+      are included per tick, rotating through the full universe so all symbols get
+      evaluated within a few ticks even on a cold start
     - Returns (active_symbols, discovered_symbols, research_signals_map)
     """
+    global _unsignaled_offset
     research_signals = {}
     active_symbols = []
     discovered_symbols = []
     skipped = []
+    unsignaled = []
 
     try:
         active_signals = research_store.get_all_active()
@@ -328,7 +337,20 @@ def get_dynamic_symbols(
             else:
                 skipped.append(f"{symbol}({conviction:.0%})")
         else:
-            skipped.append(f"{symbol}(no signal)")
+            # No research signal yet = neutral, not bad. Collect for rotating batch.
+            unsignaled.append(symbol)
+
+    # Admit a rotating slice of unsignaled symbols so the full universe gets
+    # evaluated over time even before research signals are populated.
+    if unsignaled:
+        start = _unsignaled_offset % len(unsignaled)
+        batch = (unsignaled * 2)[start:start + MAX_UNSIGNALED_PER_TICK]
+        active_symbols.extend(s for s in batch if s not in held_symbols)
+        _unsignaled_offset = (_unsignaled_offset + MAX_UNSIGNALED_PER_TICK) % len(unsignaled)
+        logger.debug(
+            "Unsignaled batch: %d/%d symbols (offset %d)",
+            len(batch), len(unsignaled), _unsignaled_offset,
+        )
 
     # Add scanner discoveries not already in universe
     for symbol, signal in research_signals.items():
@@ -359,7 +381,12 @@ def get_dynamic_symbols(
     active_symbols = list(dict.fromkeys(active_symbols))
 
     if skipped:
-        logger.info("Skipped (low/no conviction): %s", ", ".join(skipped[:10]))
+        logger.info("Skipped (low conviction): %s", ", ".join(skipped[:10]))
+    if unsignaled:
+        logger.info(
+            "Unsignaled pool: %d symbols (admitting %d this tick)",
+            len(unsignaled), min(MAX_UNSIGNALED_PER_TICK, len(unsignaled)),
+        )
 
     return active_symbols, discovered_symbols, research_signals
 
