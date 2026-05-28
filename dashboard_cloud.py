@@ -36,6 +36,15 @@ st.markdown("""
         font-family: 'Syne', sans-serif;
     }
 
+    /* ── Black canvas ─────────────────────────────────────────────── */
+    .stApp, .stApp > div, section[data-testid="stSidebar"],
+    [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
+        background: #000000 !important;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        background: #000000 !important;
+    }
+
     .block-container {
         padding: 1rem 1rem 2rem 1rem !important;
         max-width: 100% !important;
@@ -341,7 +350,7 @@ st.markdown("""
     /* ── Tab strip ────────────────────────────────────────────────── */
     .stTabs [data-baseweb="tab-list"] {
         gap: 0;
-        background: #0d1117;
+        background: #000000;
         border-bottom: 1px solid #1f2937;
         margin-bottom: 12px;
     }
@@ -367,28 +376,44 @@ st.markdown("""
     .js-plotly-plot .modebar { display: none !important; }
     .stPlotlyChart { border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
 
-    /* ── Sell button overrides ────────────────────────────────────── */
-    div[data-testid="stButton"][data-key*="sell_"] > button,
-    div[data-testid="stButton"][data-key*="confirm_"] > button {
-        background: #450a0a !important;
-        border: 1px solid #991b1b !important;
-        border-top: 1px solid #991b1b !important;
+    /* ── Sell / confirm / cancel buttons — muted, not alarming ──────── */
+    div[data-testid="stButton"][data-key*="sell_"] > button {
+        background: transparent !important;
+        border: 1px solid #374151 !important;
+        border-top: 1px solid #374151 !important;
         border-radius: 6px !important;
-        color: #ef4444 !important;
-        margin-top: 4px !important;
+        color: #6b7280 !important;
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        padding: 4px 10px !important;
+        margin-top: 6px !important;
     }
-    div[data-testid="stButton"][data-key*="cancel_"] > button {
-        background: #111827 !important;
+    div[data-testid="stButton"][data-key*="sell_"] > button:hover {
+        border-color: #ef4444 !important;
+        color: #ef4444 !important;
+        background: transparent !important;
+    }
+    div[data-testid="stButton"][data-key*="confirm_"] > button {
+        background: #0d1117 !important;
         border: 1px solid #374151 !important;
         border-top: 1px solid #374151 !important;
         border-radius: 6px !important;
         color: #9ca3af !important;
+        font-size: 11px !important;
         margin-top: 4px !important;
     }
-    div[data-testid="stButton"][data-key*="sell_"] > button:hover,
     div[data-testid="stButton"][data-key*="confirm_"] > button:hover {
-        background: #7f1d1d !important;
-        color: #fca5a5 !important;
+        border-color: #ef4444 !important;
+        color: #ef4444 !important;
+    }
+    div[data-testid="stButton"][data-key*="cancel_"] > button {
+        background: transparent !important;
+        border: 1px solid #1f2937 !important;
+        border-top: 1px solid #1f2937 !important;
+        border-radius: 6px !important;
+        color: #4b5563 !important;
+        font-size: 11px !important;
+        margin-top: 4px !important;
     }
 
     /* ── Inline refresh row ───────────────────────────────────────── */
@@ -1215,7 +1240,6 @@ with tab_portfolio:
             st.session_state.sell_result = None
 
         st.markdown('<div class="section-header">Positions</div>', unsafe_allow_html=True)
-        st.markdown('<div class="card">', unsafe_allow_html=True)
         for p in positions_sorted:
             sym    = p.get("symbol", "")
             qty    = float(p.get("qty", 0))
@@ -1225,54 +1249,69 @@ with tab_portfolio:
             pl     = float(p.get("unrealized_pl", 0))
             pl_pct = float(p.get("unrealized_plpc", 0)) * 100
             col    = pnl_color(pl)
+            pl_bar_w = min(abs(pl_pct) * 3, 100)  # visual bar width capped at 100%
+            pl_bar_col = "#22c55e22" if pl >= 0 else "#ef444422"
 
             st.markdown(f"""
-            <div class="pos-row">
-                <div>
+            <div style="background:#0d1117;border:1px solid #1f2937;border-radius:12px;
+                        padding:14px 16px;margin-bottom:8px;position:relative;overflow:hidden;">
+                <!-- P&L color bar along the bottom edge -->
+                <div style="position:absolute;bottom:0;left:0;height:2px;
+                            width:{pl_bar_w}%;background:{col};opacity:0.6;
+                            border-radius:0 0 0 12px;"></div>
+                <!-- Top row: symbol + P&L -->
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;
+                            margin-bottom:6px;">
                     <a href="https://finance.yahoo.com/quote/{sym}" target="_blank"
-                       rel="noopener" style="text-decoration:none;color:inherit;">
-                        <div class="pos-symbol">{sym}</div>
+                       rel="noopener" style="text-decoration:none;">
+                        <span style="font-family:'JetBrains Mono',monospace;font-size:17px;
+                                     font-weight:700;color:#f9fafb;letter-spacing:0.02em;">{sym}</span>
                     </a>
-                    <div class="pos-detail">{qty:.4f} @ ${entry:.2f} → ${curr:.2f}</div>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:17px;
+                                 font-weight:700;color:{col};">{pl_pct:+.2f}%</span>
                 </div>
-                <div style="text-align:right;">
-                    <div class="pos-pnl" style="color:{col};">{pl_pct:+.2f}%</div>
-                    <div style="font-size:11px;color:{col};">${pl:+.2f}</div>
-                    <div style="font-size:10px;color:#4b5563;">${val:,.2f}</div>
+                <!-- Bottom row: position detail + dollar P&L + value -->
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-size:11px;color:#4b5563;">
+                        {qty:.4f} sh · ${entry:.2f} → ${curr:.2f}
+                    </span>
+                    <div style="text-align:right;">
+                        <div style="font-family:'JetBrains Mono',monospace;font-size:11px;
+                                    color:{col};">${pl:+,.2f}</div>
+                        <div style="font-size:10px;color:#374151;">${val:,.2f}</div>
+                    </div>
                 </div>
             </div>""", unsafe_allow_html=True)
 
-            # Sparkline (silently absent outside market hours)
+            # Sparkline — compact, sits flush below the card
             spark = fetch_position_sparkline(sym)
-            render_chart(chart_sparkline(spark, entry))
+            if spark:
+                render_chart(chart_sparkline(spark, entry))
 
+            # Sell controls — muted, inline
             if st.session_state.confirm_sell == sym:
-                c1, c2 = st.columns(2)
-                if c1.button(f"✅ Confirm SELL {sym}", key=f"confirm_{sym}",
-                             type="primary", use_container_width=True):
+                _cc1, _cc2 = st.columns([1, 1])
+                if _cc1.button(f"Confirm close {sym}", key=f"confirm_{sym}",
+                               use_container_width=True):
                     try:
                         result = _alpaca_close_position(sym)
                         if result.get("skipped") == "already_pending":
-                            st.session_state.sell_result = (sym, f"⚠️ SELL {sym} — open order already pending")
+                            st.session_state.sell_result = (sym, f"⚠️ {sym} — order already pending")
                         elif result.get("pdt_blocked"):
-                            st.session_state.sell_result = (sym, f"⚠️ SELL {sym} blocked — PDT protection (bought today)")
+                            st.session_state.sell_result = (sym, f"⚠️ {sym} — PDT protection (bought today)")
                         else:
-                            st.session_state.sell_result = (sym, f"✅ SELL {sym} order placed — ${val:,.2f}")
+                            st.session_state.sell_result = (sym, f"✓ {sym} close order placed · ${val:,.2f}")
                     except Exception as e:
-                        st.session_state.sell_result = (sym, f"❌ Error selling {sym}: {e}")
+                        st.session_state.sell_result = (sym, f"Error: {e}")
                     st.session_state.confirm_sell = None
                     st.rerun()
-                if c2.button("Cancel", key=f"cancel_{sym}", use_container_width=True):
+                if _cc2.button("Cancel", key=f"cancel_{sym}", use_container_width=True):
                     st.session_state.confirm_sell = None
                     st.rerun()
             else:
-                if st.button(f"Sell {sym}", key=f"sell_{sym}", use_container_width=True):
+                if st.button(f"Close {sym}", key=f"sell_{sym}", use_container_width=True):
                     st.session_state.confirm_sell = sym
                     st.rerun()
-
-            st.markdown("<hr style='border:0;border-top:1px solid #1f2937;margin:4px 0;'>",
-                        unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Cumulative P&L + executions ────────────────────────────────
     st.markdown('<div class="section-header">Trade History</div>', unsafe_allow_html=True)
