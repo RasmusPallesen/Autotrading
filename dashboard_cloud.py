@@ -68,7 +68,7 @@ st.markdown("""
     .metric-label {
         font-size: 10px;
         font-weight: 600;
-        color: #6b7280;
+        color: #9ca3af;
         text-transform: uppercase;
         letter-spacing: 0.05em;
         margin-bottom: 4px;
@@ -124,15 +124,15 @@ st.markdown("""
     }
     .badge-buy    { background: #052e16; color: #22c55e; border: 1px solid #166534; }
     .badge-sell   { background: #450a0a; color: #ef4444; border: 1px solid #991b1b; }
-    .badge-hold   { background: #1f2937; color: #9ca3af; border: 1px solid #374151; }
+    .badge-hold   { background: #1f2937; color: #d1d5db; border: 1px solid #374151; }
     .badge-yes    { background: #052e16; color: #22c55e; }
     .badge-no     { background: #450a0a; color: #ef4444; }
     .badge-high   { background: #450a0a; color: #ef4444; }
     .badge-medium { background: #451a03; color: #f59e0b; }
-    .badge-low    { background: #1f2937; color: #9ca3af; }
+    .badge-low    { background: #1f2937; color: #d1d5db; }
     .badge-bull   { background: #052e16; color: #22c55e; }
     .badge-bear   { background: #450a0a; color: #ef4444; }
-    .badge-neutral{ background: #1f2937; color: #9ca3af; }
+    .badge-neutral{ background: #1f2937; color: #d1d5db; }
     .badge-watch  { background: #451a03; color: #f59e0b; }
     .badge-pct    { background: #1f2937; color: #e5e7eb; }
     .badge-purple { background: #2e1065; color: #a78bfa; border: 1px solid #4c1d95; }
@@ -140,17 +140,17 @@ st.markdown("""
     .card-meta {
         font-family: 'JetBrains Mono', monospace;
         font-size: 11px;
-        color: #4b5563;
+        color: #9ca3af;
         margin-bottom: 6px;
     }
     .card-text {
         font-size: 12px;
-        color: #9ca3af;
+        color: #d1d5db;
         line-height: 1.5;
     }
     .card-note {
         font-size: 11px;
-        color: #6b7280;
+        color: #9ca3af;
         margin-top: 6px;
         padding-top: 6px;
         border-top: 1px solid #1f2937;
@@ -166,7 +166,7 @@ st.markdown("""
     }
     .pos-row:last-child { border-bottom: none; }
     .pos-symbol { font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 700; color: #f9fafb; }
-    .pos-detail { font-size: 11px; color: #6b7280; margin-top: 2px; }
+    .pos-detail { font-size: 11px; color: #9ca3af; margin-top: 2px; }
     .pos-pnl    { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; text-align: right; }
 
     /* ── Scanner banner ───────────────────────────────────────────── */
@@ -209,13 +209,13 @@ st.markdown("""
         padding: 10px;
     }
     .scanner-sym { font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 800; color: #f59e0b; }
-    .scanner-text { font-size: 10px; color: #6b7280; margin-top: 6px; line-height: 1.4; }
+    .scanner-text { font-size: 10px; color: #9ca3af; margin-top: 6px; line-height: 1.4; }
 
     /* ── Section headers ──────────────────────────────────────────── */
     .section-header {
         font-size: 13px;
         font-weight: 800;
-        color: #6b7280;
+        color: #9ca3af;
         text-transform: uppercase;
         letter-spacing: 0.1em;
         margin: 20px 0 10px 0;
@@ -245,7 +245,7 @@ st.markdown("""
         text-align: center;
     }
     .stat-val { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 700; color: #f9fafb; }
-    .stat-lbl { font-size: 9px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; }
+    .stat-lbl { font-size: 9px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; }
 
     /* ── Streamlit overrides ──────────────────────────────────────── */
     div[data-testid="metric-container"] { display: none; }
@@ -255,7 +255,7 @@ st.markdown("""
     /* Scrollable table wrapper */
     .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 8px; }
     .table-wrap table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    .table-wrap th { background: #111827; color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding: 8px 10px; text-align: left; font-weight: 600; border-bottom: 1px solid #1f2937; white-space: nowrap; }
+    .table-wrap th { background: #111827; color: #9ca3af; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding: 8px 10px; text-align: left; font-weight: 600; border-bottom: 1px solid #1f2937; white-space: nowrap; }
     .table-wrap td { padding: 8px 10px; border-bottom: 1px solid #0d1117; color: #e5e7eb; vertical-align: top; }
     .table-wrap tr:last-child td { border-bottom: none; }
     .table-wrap tr:hover td { background: #111827; }
@@ -281,7 +281,7 @@ st.markdown("""
     .detail-title {
         font-size: 11px;
         font-weight: 700;
-        color: #6b7280;
+        color: #9ca3af;
         text-transform: uppercase;
         letter-spacing: 0.08em;
         margin: 12px 0 6px 0;
@@ -298,7 +298,7 @@ st.markdown("""
         line-height: 1.4;
     }
     .detail-point:last-child { border-bottom: none; }
-    .detail-point-icon { flex-shrink: 0; color: #4b5563; }
+    .detail-point-icon { flex-shrink: 0; color: #9ca3af; }
     .detail-risk {
         display: flex;
         gap: 8px;
@@ -377,29 +377,34 @@ st.markdown("""
     .stPlotlyChart { border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
 
     /* ── Sell / confirm / cancel buttons — muted, not alarming ──────── */
+    /* Close / Confirm / Cancel — small, muted, right-aligned column */
     div[data-testid="stButton"][data-key*="sell_"] > button {
         background: transparent !important;
         border: 1px solid #374151 !important;
         border-top: 1px solid #374151 !important;
         border-radius: 6px !important;
-        color: #6b7280 !important;
+        color: #9ca3af !important;
         font-size: 11px !important;
-        font-weight: 600 !important;
-        padding: 4px 10px !important;
-        margin-top: 6px !important;
+        font-weight: 500 !important;
+        padding: 3px 8px !important;
+        min-height: 28px !important;
+        margin-top: 4px !important;
     }
     div[data-testid="stButton"][data-key*="sell_"] > button:hover {
-        border-color: #ef4444 !important;
-        color: #ef4444 !important;
-        background: transparent !important;
+        border-color: #6b7280 !important;
+        color: #d1d5db !important;
+        background: #111827 !important;
     }
     div[data-testid="stButton"][data-key*="confirm_"] > button {
-        background: #0d1117 !important;
+        background: transparent !important;
         border: 1px solid #374151 !important;
         border-top: 1px solid #374151 !important;
         border-radius: 6px !important;
-        color: #9ca3af !important;
+        color: #d1d5db !important;
         font-size: 11px !important;
+        font-weight: 500 !important;
+        padding: 3px 8px !important;
+        min-height: 28px !important;
         margin-top: 4px !important;
     }
     div[data-testid="stButton"][data-key*="confirm_"] > button:hover {
@@ -411,8 +416,11 @@ st.markdown("""
         border: 1px solid #1f2937 !important;
         border-top: 1px solid #1f2937 !important;
         border-radius: 6px !important;
-        color: #4b5563 !important;
+        color: #6b7280 !important;
         font-size: 11px !important;
+        font-weight: 500 !important;
+        padding: 3px 8px !important;
+        min-height: 28px !important;
         margin-top: 4px !important;
     }
 
@@ -711,7 +719,7 @@ def pnl_color(val: float) -> str:
 _PLOTLY_CFG = {"displayModeBar": False, "staticPlot": False}
 _DARK = "#0d1117"
 _GRID = "#1f2937"
-_FONT = dict(color="#9ca3af", family="Syne")
+_FONT = dict(color="#d1d5db", family="Syne")
 _MONO = "JetBrains Mono"
 
 
@@ -1272,13 +1280,13 @@ with tab_portfolio:
                 </div>
                 <!-- Bottom row: position detail + dollar P&L + value -->
                 <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <span style="font-size:11px;color:#4b5563;">
+                    <span style="font-size:11px;color:#9ca3af;">
                         {qty:.4f} sh · ${entry:.2f} → ${curr:.2f}
                     </span>
                     <div style="text-align:right;">
                         <div style="font-family:'JetBrains Mono',monospace;font-size:11px;
                                     color:{col};">${pl:+,.2f}</div>
-                        <div style="font-size:10px;color:#374151;">${val:,.2f}</div>
+                        <div style="font-size:10px;color:#6b7280;">${val:,.2f}</div>
                     </div>
                 </div>
             </div>""", unsafe_allow_html=True)
@@ -1288,11 +1296,10 @@ with tab_portfolio:
             if spark:
                 render_chart(chart_sparkline(spark, entry))
 
-            # Sell controls — muted, inline
+            # Sell controls — small, right-aligned
+            _gap, _btn = st.columns([3, 1])
             if st.session_state.confirm_sell == sym:
-                _cc1, _cc2 = st.columns([1, 1])
-                if _cc1.button(f"Confirm close {sym}", key=f"confirm_{sym}",
-                               use_container_width=True):
+                if _gap.button("✓ Confirm", key=f"confirm_{sym}", use_container_width=True):
                     try:
                         result = _alpaca_close_position(sym)
                         if result.get("skipped") == "already_pending":
@@ -1305,11 +1312,11 @@ with tab_portfolio:
                         st.session_state.sell_result = (sym, f"Error: {e}")
                     st.session_state.confirm_sell = None
                     st.rerun()
-                if _cc2.button("Cancel", key=f"cancel_{sym}", use_container_width=True):
+                if _btn.button("✕", key=f"cancel_{sym}", use_container_width=True):
                     st.session_state.confirm_sell = None
                     st.rerun()
             else:
-                if st.button(f"Close {sym}", key=f"sell_{sym}", use_container_width=True):
+                if _btn.button("Close", key=f"sell_{sym}", use_container_width=True):
                     st.session_state.confirm_sell = sym
                     st.rerun()
 
