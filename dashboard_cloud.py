@@ -1119,7 +1119,7 @@ st.markdown(f"""
                     font-weight:700;color:#f9fafb;">{cph_str}</div>
         <div style="font-family:'JetBrains Mono',monospace;font-size:11px;
                     color:#6b7280;margin-top:2px;">{nyse_str}</div>
-        <div style="font-size:10px;color:#4b5563;margin-top:1px;">auto-refresh {refresh}s</div>
+        <div style="font-size:10px;color:#4b5563;margin-top:1px;">auto-refreshing</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
