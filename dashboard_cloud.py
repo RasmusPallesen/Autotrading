@@ -380,14 +380,41 @@ def get_conn():
         return None, None
 
 
-@st.cache_resource
-def get_executor():
-    from execution.alpaca_executor import AlpacaExecutor
-    class _Cfg:
-        api_key    = ALPACA_API_KEY
-        secret_key = ALPACA_SECRET
-        paper      = ALPACA_PAPER
-    return AlpacaExecutor(_Cfg())
+def _alpaca_close_position(symbol: str) -> dict:
+    """Close a position via Alpaca REST API (no alpaca-py dependency)."""
+    import requests as _requests
+    headers = {
+        "APCA-API-KEY-ID": ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET,
+    }
+    # Check for open orders first
+    r = _requests.get(
+        f"{ALPACA_BASE}/v2/orders",
+        params={"status": "open", "symbols": symbol},
+        headers=headers,
+        timeout=8,
+    )
+    if r.ok and r.json():
+        return {"skipped": "already_pending", "orders": r.json()}
+
+    # Close the position (DELETE /v2/positions/{symbol})
+    r = _requests.delete(
+        f"{ALPACA_BASE}/v2/positions/{symbol}",
+        headers=headers,
+        timeout=8,
+    )
+    if r.ok:
+        return {"placed": True, "data": r.json()}
+    # Surface Alpaca error codes
+    try:
+        err = r.json()
+    except Exception:
+        err = {"message": r.text}
+    code = err.get("code", r.status_code)
+    msg  = err.get("message", "unknown error")
+    if code == 40310100:
+        return {"pdt_blocked": True, "message": msg}
+    raise RuntimeError(f"Alpaca {r.status_code}: {msg}")
 
 
 def query(sql: str, params=()) -> pd.DataFrame:
@@ -952,8 +979,6 @@ if positions:
     positions_sorted = sorted(positions,
         key=lambda p: float(p.get("unrealized_plpc", 0)), reverse=True)
 
-    executor = get_executor()
-
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
     # Sell result banner
@@ -994,15 +1019,15 @@ if positions:
             c1, c2 = st.columns(2)
             if c1.button(f"✅ Confirm SELL {sym}", key=f"confirm_{sym}", type="primary", use_container_width=True):
                 try:
-                    result = executor.sell(symbol=sym, close_all=True)
-                    if result and isinstance(result, dict) and result.get("skipped") == "already_pending":
-                        st.session_state.sell_result = (sym, f"⚠️ SELL {sym} already has an open order pending")
-                    elif result and not (hasattr(result, "is_pdt") and result.is_pdt):
-                        st.session_state.sell_result = (sym, f"✅ SELL {sym} order placed — ${val:,.2f}")
+                    result = _alpaca_close_position(sym)
+                    if result.get("skipped") == "already_pending":
+                        st.session_state.sell_result = (sym, f"⚠️ SELL {sym} — open order already pending")
+                    elif result.get("pdt_blocked"):
+                        st.session_state.sell_result = (sym, f"⚠️ SELL {sym} blocked — PDT protection (bought today)")
                     else:
-                        st.session_state.sell_result = (sym, f"❌ SELL {sym} failed — check logs")
+                        st.session_state.sell_result = (sym, f"✅ SELL {sym} order placed — ${val:,.2f}")
                 except Exception as e:
-                    st.session_state.sell_result = (sym, f"❌ Error: {e}")
+                    st.session_state.sell_result = (sym, f"❌ Error selling {sym}: {e}")
                 st.session_state.confirm_sell = None
                 st.rerun()
             if c2.button("Cancel", key=f"cancel_{sym}", use_container_width=True):
