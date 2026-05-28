@@ -162,6 +162,15 @@ class TradeStore:
         return self._fetchall(
             "SELECT * FROM executions ORDER BY id DESC LIMIT %s", (limit,))
 
+    def bought_today(self, symbol: str) -> bool:
+        """Return True if a BUY for this symbol was logged today (UTC). Used to avoid PDT violations."""
+        today = datetime.now(timezone.utc).date().isoformat()
+        rows = self._fetchall(
+            "SELECT 1 FROM executions WHERE symbol = %s AND side = 'BUY' AND DATE(ts) = %s LIMIT 1",
+            (symbol, today),
+        )
+        return len(rows) > 0
+
     def _fetchall(self, sql: str, params: tuple) -> List[dict]:
         try:
             if self._backend == "postgres":
