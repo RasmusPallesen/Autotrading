@@ -693,17 +693,41 @@ if st.sidebar.button("Reconnect DB"):
 
 
 # ── Log helpers ───────────────────────────────────────────────────────────────
+_LOG_FILE_MAP = {
+    "trading-live":     "logs/agent.log",
+    "trading-paper":    "logs/agent.log",
+    "trading-research": "logs/research.log",
+}
+
+
 def fetch_logs(service: str, n_lines: int) -> list:
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["journalctl", "-u", service, f"-n{n_lines}", "--no-pager", "--output=short-iso"],
-            capture_output=True, text=True, timeout=5,
-        )
-        lines = result.stdout.strip().splitlines()
-        return lines if lines else ["(no log output)"]
-    except Exception as e:
-        return [f"(journalctl unavailable: {e})"]
+    import subprocess, os
+
+    # Strategy 1: read log file directly (fastest, no subprocess needed)
+    log_path = _LOG_FILE_MAP.get(service)
+    if log_path and os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            return [l.rstrip() for l in lines[-n_lines:]]
+        except Exception:
+            pass  # fall through to journalctl
+
+    # Strategy 2: journalctl with full path (PATH may be restricted in dashboard process)
+    for jctl in ("/usr/bin/journalctl", "/bin/journalctl"):
+        if not os.path.exists(jctl):
+            continue
+        try:
+            result = subprocess.run(
+                [jctl, "-u", service, f"-n{n_lines}", "--no-pager", "--output=short-iso"],
+                capture_output=True, text=True, timeout=5,
+            )
+            lines = result.stdout.strip().splitlines()
+            return lines if lines else ["(no log output)"]
+        except Exception as e:
+            return [f"(journalctl error: {e})"]
+
+    return [f"(log unavailable: {log_path!r} not found and journalctl not installed)"]
 
 
 def _colorize_log_line(line: str) -> str:
