@@ -281,7 +281,7 @@ if not scanner_hits.empty:
         with cols[i % 4]:
             st.markdown(f"""
             <div style="background:#0d1117;border:1px solid #f59e0b;border-radius:8px;padding:12px;height:100%;">
-                <div style="font-size:20px;font-weight:800;color:#f59e0b;">{row["symbol"]}</div>
+                <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;"><div style="font-size:20px;font-weight:800;color:#f59e0b;">{row["symbol"]}</div></a>
                 <div style="margin:6px 0;display:flex;gap:6px;flex-wrap:wrap;">
                     <span style="background:{s_color};color:white;padding:2px 7px;border-radius:4px;font-size:11px;">{row["sentiment"]}</span>
                     <span style="background:{a_color};color:white;padding:2px 7px;border-radius:4px;font-size:11px;">{row["recommended_action"]}</span>
@@ -297,7 +297,7 @@ if not scanner_hits.empty:
                 s_color = {"BULLISH": "#22c55e", "BEARISH": "#ef4444", "NEUTRAL": "#6b7280"}.get(str(row["sentiment"]), "#6b7280")
                 st.markdown(f"""
                 <div style="border:1px solid #374151;border-radius:6px;padding:10px;margin:4px 0;background:#0d1117;">
-                    <strong style="color:#f59e0b;">{row["symbol"]}</strong>
+                    <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;"><strong style="color:#f59e0b;">{row["symbol"]}</strong></a>
                     <span style="background:{s_color};color:white;padding:2px 6px;border-radius:4px;font-size:11px;margin-left:8px;">{row["sentiment"]}</span>
                     <span style="color:#6b7280;font-size:11px;margin-left:8px;">{row["conviction_pct"]}% conviction</span>
                     <div style="font-size:11px;color:#6b7280;margin-top:4px;">{str(row["summary"])[:500]}</div>
@@ -457,7 +457,7 @@ else:
         st.markdown(f"""
         <div style="border:1px solid #1f2937;border-radius:8px;padding:12px 16px;margin:8px 0;background:#111827;">
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-                <strong style="font-size:16px;">{row["symbol"]}</strong>
+                <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><strong style="font-size:16px;">{row["symbol"]}</strong></a>
                 <div>
                     <span style="background:{s_color};color:white;padding:3px 8px;border-radius:4px;font-size:12px;margin-right:6px;">{row["sentiment"]}</span>
                     <span style="background:{a_color};color:white;padding:3px 8px;border-radius:4px;font-size:12px;margin-right:6px;">{row["recommended_action"]}</span>
