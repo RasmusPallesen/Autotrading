@@ -993,26 +993,6 @@ def _detail_panel(row: dict, section: str):
     st.markdown(html, unsafe_allow_html=True)
 
 
-# ── Inline refresh control ─────────────────────────────────────────────────────
-backend, conn = get_conn()
-_rc1, _rc2, _rc3 = st.columns([3, 1, 1])
-refresh = _rc1.select_slider(
-    "refresh",
-    options=[10, 30, 60, 120],
-    value=30,
-    format_func=lambda x: f"↻ {x}s",
-    label_visibility="collapsed",
-)
-_rc2.markdown(
-    f'<div style="font-size:11px;color:#6b7280;padding-top:10px;text-align:center;">'
-    f'{"📄" if ALPACA_PAPER else "💰"} DB {"✅" if conn else "❌"}</div>',
-    unsafe_allow_html=True,
-)
-if _rc3.button("Reconnect", use_container_width=True):
-    st.cache_resource.clear()
-    st.rerun()
-
-
 # ── Log helpers ───────────────────────────────────────────────────────────────
 # Absolute project root — works regardless of the dashboard's working directory
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -1184,7 +1164,7 @@ if account:
         t2_html = ""
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_portfolio, tab_signals, tab_logs = st.tabs(["Portfolio", "Signals", "Logs"])
+tab_portfolio, tab_signals = st.tabs(["Portfolio", "Signals"])
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1562,27 +1542,24 @@ with tab_signals:
                 _detail_panel(row.to_dict(), "research")
 
 
-# ════════════════════════════════════════════════════════════════════
-# TAB 3 — LOGS
-# ════════════════════════════════════════════════════════════════════
-with tab_logs:
-    lc1, lc2 = st.columns([2, 1])
-    log_service = lc1.selectbox(
-        "Service",
-        ["trading-live", "trading-paper", "trading-research"],
-        label_visibility="collapsed",
-    )
-    log_lines = lc2.select_slider(
-        "Lines", options=[50, 100, 150, 200, 300], value=100,
-        label_visibility="collapsed",
-    )
-    raw_lines  = fetch_logs(log_service, log_lines)
-    html_lines = "".join(_colorize_log_line(ln) for ln in raw_lines)
-    st.markdown(
-        f'<div style="max-height:500px;overflow-y:auto;border:1px solid #374151;'
-        f'border-radius:6px;padding:6px;background:#0d1117;">{html_lines}</div>',
-        unsafe_allow_html=True,
-    )
+# ── Refresh control ────────────────────────────────────────────────────────────
+_, conn = get_conn()
+_rc1, _rc2, _rc3 = st.columns([3, 1, 1])
+refresh = _rc1.select_slider(
+    "refresh",
+    options=[10, 30, 60, 120],
+    value=30,
+    format_func=lambda x: f"↻ {x}s",
+    label_visibility="collapsed",
+)
+_rc2.markdown(
+    f'<div style="font-size:11px;color:#9ca3af;padding-top:10px;text-align:center;">'
+    f'{"📄" if ALPACA_PAPER else "💰"} DB {"✅" if conn else "❌"}</div>',
+    unsafe_allow_html=True,
+)
+if _rc3.button("Reconnect", use_container_width=True):
+    st.cache_resource.clear()
+    st.rerun()
 
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
