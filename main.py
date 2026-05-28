@@ -195,6 +195,14 @@ def execute_opportunity_sell(
         logger.info("Opportunity sell declined: %s", sell_reason)
         return positions, positions_map
 
+    # PDT guard: don't sell a position opened today — that's a day trade
+    if store and store.bought_today(weakest["symbol"]):
+        logger.info(
+            "[%s] Opportunity sell skipped — position opened today (PDT protection)",
+            weakest["symbol"],
+        )
+        return positions, positions_map
+
     logger.info("OPPORTUNITY SELL triggered: %s", sell_reason)
     sell_result = executor.sell(symbol=weakest["symbol"], close_all=True)
 
@@ -782,6 +790,13 @@ def run_loop(
         elif decision.action == "SELL":
             existing = positions_map.get(decision.symbol)
             if existing:
+                # PDT guard: don't sell a position opened today
+                if store and store.bought_today(decision.symbol):
+                    logger.info(
+                        "[%s] SELL skipped — position opened today (PDT protection)",
+                        decision.symbol,
+                    )
+                    continue
                 result = executor.sell(symbol=decision.symbol, close_all=True)
                 if result and not hasattr(result, 'is_pdt'):
                     market_value = existing.get("market_value")
