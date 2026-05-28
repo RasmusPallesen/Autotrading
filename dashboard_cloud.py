@@ -784,7 +784,7 @@ if not scanner.empty:
         st.markdown(f"""
         <div class="card" style="margin-bottom:2px;">
             <div class="card-header">
-                <span class="card-symbol" style="color:#f59e0b;">{row["symbol"]}</span>
+                <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol" style="color:#f59e0b;">{row["symbol"]}</span></a>
                 <div class="card-badges">
                     <span class="badge {sc_cls}">{row["sentiment"]}</span>
                     <span class="badge {ac_cls}">{row["recommended_action"]}</span>
@@ -884,7 +884,7 @@ if positions:
         pos_html += f"""
         <div class="pos-row">
             <div>
-                <div class="pos-symbol">{sym}</div>
+                <a href="https://finance.yahoo.com/quote/{sym}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><div class="pos-symbol">{sym}</div></a>
                 <div class="pos-detail">{qty:.4f} @ ${entry:.2f} → ${curr:.2f}</div>
             </div>
             <div style="text-align:right;">
@@ -966,7 +966,7 @@ if not decisions.empty:
             st.markdown(f"""
             <div class="card" style="margin-bottom:2px;">
                 <div class="card-header">
-                    <span class="card-symbol">{row.symbol}</span>
+                    <a href="https://finance.yahoo.com/quote/{row.symbol}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol">{row.symbol}</span></a>
                     <div class="card-badges">{ab} {ub} {apb}
                         </div>
                 </div>
@@ -990,7 +990,7 @@ if not executions.empty:
             st.markdown(f"""
             <div class="card">
                 <div class="card-header">
-                    <span class="card-symbol">{row["symbol"]}</span>
+                    <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol">{row["symbol"]}</span></a>
                     <div class="card-badges">
                         <span class="badge {side_cls}">{row["side"]}</span>
                         <span class="badge badge-pct">${float(row.get("notional",0)):,.2f}</span>
@@ -1014,7 +1014,7 @@ else:
         st.markdown(f"""
         <div class="card" style="border-color:{border_color};background:{bg_color};">
             <div class="card-header">
-                <span class="card-symbol" style="color:#f59e0b;">{row["symbol"]}</span>
+                <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol" style="color:#f59e0b;">{row["symbol"]}</span></a>
                 <div class="card-badges">
                     <span class="badge badge-watch">{label}</span>
                     <span class="badge badge-pct">{row["conviction_pct"]}%</span>
@@ -1034,7 +1034,7 @@ else:
         st.markdown(f"""
         <div class="card" style="border-color:#4c1d95;background:#12082e;">
             <div class="card-header">
-                <span class="card-symbol" style="color:#a78bfa;">🔒 {row["symbol"]}</span>
+                <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol" style="color:#a78bfa;">🔒 {row["symbol"]}</span></a>
                 <div class="card-badges">
                     <span class="badge badge-purple">INSIDER</span>
                     <span class="badge badge-pct">{row["conviction_pct"]}%</span>
@@ -1060,7 +1060,7 @@ else:
         st.markdown(f"""
         <div class="card" style="margin-bottom:2px;">
             <div class="card-header">
-                <span class="card-symbol">{row["symbol"]}</span>
+                <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol">{row["symbol"]}</span></a>
                 <div class="card-badges">
                     <span class="badge {sc_cls}">{row["sentiment"]}</span>
                     <span class="badge {ac_cls}">{row["recommended_action"]}</span>
