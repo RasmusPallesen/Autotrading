@@ -21,6 +21,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+if "confirm_sell" not in st.session_state:
+    st.session_state.confirm_sell = None
+if "sell_result" not in st.session_state:
+    st.session_state.sell_result = None
+
 st.markdown("""
 <style>
     /* ── Reset & base ─────────────────────────────────────────────── */
@@ -373,6 +378,16 @@ def get_conn():
     except Exception as e:
         st.error(f"DB: {e}")
         return None, None
+
+
+@st.cache_resource
+def get_executor():
+    from execution.alpaca_executor import AlpacaExecutor
+    class _Cfg:
+        api_key    = ALPACA_API_KEY
+        secret_key = ALPACA_SECRET
+        paper      = ALPACA_PAPER
+    return AlpacaExecutor(_Cfg())
 
 
 def query(sql: str, params=()) -> pd.DataFrame:
@@ -937,7 +952,21 @@ if positions:
     positions_sorted = sorted(positions,
         key=lambda p: float(p.get("unrealized_plpc", 0)), reverse=True)
 
-    pos_html = ""
+    executor = get_executor()
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+
+    # Sell result banner
+    if st.session_state.sell_result:
+        sym_done, msg = st.session_state.sell_result
+        bg = "#052e16" if "placed" in msg.lower() else "#450a0a"
+        st.markdown(
+            f'<div style="background:{bg};border-radius:6px;padding:8px 12px;'
+            f'margin-bottom:8px;font-size:13px;">{msg}</div>',
+            unsafe_allow_html=True,
+        )
+        st.session_state.sell_result = None
+
     for p in positions_sorted:
         sym    = p.get("symbol", "")
         qty    = float(p.get("qty", 0))
@@ -947,7 +976,8 @@ if positions:
         pl     = float(p.get("unrealized_pl", 0))
         pl_pct = float(p.get("unrealized_plpc", 0)) * 100
         col    = pnl_color(pl)
-        pos_html += f"""
+
+        st.markdown(f"""
         <div class="pos-row">
             <div>
                 <a href="https://finance.yahoo.com/quote/{sym}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><div class="pos-symbol">{sym}</div></a>
@@ -958,9 +988,34 @@ if positions:
                 <div style="font-size:11px;color:{col};">${pl:+.2f}</div>
                 <div style="font-size:10px;color:#4b5563;">${val:,.2f}</div>
             </div>
-        </div>"""
+        </div>""", unsafe_allow_html=True)
 
-    st.markdown(f'<div class="card">{pos_html}</div>', unsafe_allow_html=True)
+        if st.session_state.confirm_sell == sym:
+            c1, c2 = st.columns(2)
+            if c1.button(f"✅ Confirm SELL {sym}", key=f"confirm_{sym}", type="primary", use_container_width=True):
+                try:
+                    result = executor.sell(symbol=sym, close_all=True)
+                    if result and isinstance(result, dict) and result.get("skipped") == "already_pending":
+                        st.session_state.sell_result = (sym, f"⚠️ SELL {sym} already has an open order pending")
+                    elif result and not (hasattr(result, "is_pdt") and result.is_pdt):
+                        st.session_state.sell_result = (sym, f"✅ SELL {sym} order placed — ${val:,.2f}")
+                    else:
+                        st.session_state.sell_result = (sym, f"❌ SELL {sym} failed — check logs")
+                except Exception as e:
+                    st.session_state.sell_result = (sym, f"❌ Error: {e}")
+                st.session_state.confirm_sell = None
+                st.rerun()
+            if c2.button("Cancel", key=f"cancel_{sym}", use_container_width=True):
+                st.session_state.confirm_sell = None
+                st.rerun()
+        else:
+            if st.button(f"Sell {sym}", key=f"sell_{sym}", use_container_width=True):
+                st.session_state.confirm_sell = sym
+                st.rerun()
+
+        st.markdown("<hr style='border:0;border-top:1px solid #1f2937;margin:4px 0;'>", unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ── Decision KPIs ──────────────────────────────────────────────────────────────
