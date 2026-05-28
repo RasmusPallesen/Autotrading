@@ -692,6 +692,45 @@ if st.sidebar.button("Reconnect DB"):
     st.rerun()
 
 
+# ── Log helpers ───────────────────────────────────────────────────────────────
+def fetch_logs(service: str, n_lines: int) -> list:
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", service, f"-n{n_lines}", "--no-pager", "--output=short-iso"],
+            capture_output=True, text=True, timeout=5,
+        )
+        lines = result.stdout.strip().splitlines()
+        return lines if lines else ["(no log output)"]
+    except Exception as e:
+        return [f"(journalctl unavailable: {e})"]
+
+
+def _colorize_log_line(line: str) -> str:
+    l = line.lower()
+    if "[hot path]" in l:
+        color, bg = "#fed7aa", "#431407"
+    elif "[mini]" in l:
+        color, bg = "#bfdbfe", "#1e3a5f"
+    elif "[sweep]" in l:
+        color, bg = "#bbf7d0", "#14532d"
+    elif "buy executed" in l or "] buy " in l:
+        color, bg = "#86efac", "#052e16"
+    elif "sell executed" in l or "] sell " in l:
+        color, bg = "#fdba74", "#431407"
+    elif "error" in l or "critical" in l or "exception" in l:
+        color, bg = "#fca5a5", "#450a0a"
+    elif "warning" in l or "warn" in l:
+        color, bg = "#fde68a", "#422006"
+    else:
+        color, bg = "#9ca3af", "transparent"
+    safe = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        f'<div style="font-family:monospace;font-size:11px;color:{color};background:{bg};'
+        f'padding:1px 4px;white-space:pre-wrap;word-break:break-all;">{safe}</div>'
+    )
+
+
 # ── Title ──────────────────────────────────────────────────────────────────────
 from datetime import timezone, timedelta
 import pytz
@@ -1073,6 +1112,30 @@ else:
         _card_button(key, row['symbol'], is_open)
         if is_open:
             _detail_panel(row.to_dict(), "research")
+
+
+# ── Live Logs ─────────────────────────────────────────────────────────────────
+st.markdown('<div class="section-header">📋 Live Logs</div>', unsafe_allow_html=True)
+with st.expander("Agent Logs", expanded=False):
+    lc1, lc2 = st.columns([2, 1])
+    log_service = lc1.selectbox(
+        "Service",
+        ["trading-live", "trading-paper", "trading-research"],
+        label_visibility="collapsed",
+    )
+    log_lines = lc2.select_slider(
+        "Lines",
+        options=[50, 100, 150, 200, 300],
+        value=100,
+        label_visibility="collapsed",
+    )
+    raw_lines = fetch_logs(log_service, log_lines)
+    html_lines = "".join(_colorize_log_line(ln) for ln in raw_lines)
+    st.markdown(
+        f'<div style="max-height:400px;overflow-y:auto;border:1px solid #374151;'
+        f'border-radius:6px;padding:6px;background:#0d1117;">{html_lines}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
