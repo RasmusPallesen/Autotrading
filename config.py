@@ -34,7 +34,7 @@ class CoinbaseConfig:
 class AnthropicConfig:
     api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     model: str = "claude-haiku-4-5-20251001"
-    max_tokens: int = 512
+    max_tokens: int = 256
 
 
 @dataclass
