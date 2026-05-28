@@ -10,6 +10,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 from risk.settlement_tracker import settlement_date
@@ -336,6 +337,62 @@ st.markdown("""
         color: #9ca3af !important;
         border-color: #374151 !important;
     }
+
+    /* ── Tab strip ────────────────────────────────────────────────── */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0;
+        background: #0d1117;
+        border-bottom: 1px solid #1f2937;
+        margin-bottom: 12px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-family: 'Syne', sans-serif;
+        font-size: 13px;
+        font-weight: 700;
+        color: #6b7280;
+        background: transparent;
+        border-radius: 0;
+        padding: 12px 20px;
+        min-height: 44px;
+        border-bottom: 2px solid transparent;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #f9fafb !important;
+        background: transparent !important;
+        border-bottom: 2px solid #3b82f6 !important;
+    }
+    .stTabs [data-baseweb="tab-panel"] { padding: 0; }
+
+    /* ── Plotly charts ────────────────────────────────────────────── */
+    .js-plotly-plot .modebar { display: none !important; }
+    .stPlotlyChart { border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
+
+    /* ── Sell button overrides ────────────────────────────────────── */
+    div[data-testid="stButton"][data-key*="sell_"] > button,
+    div[data-testid="stButton"][data-key*="confirm_"] > button {
+        background: #450a0a !important;
+        border: 1px solid #991b1b !important;
+        border-top: 1px solid #991b1b !important;
+        border-radius: 6px !important;
+        color: #ef4444 !important;
+        margin-top: 4px !important;
+    }
+    div[data-testid="stButton"][data-key*="cancel_"] > button {
+        background: #111827 !important;
+        border: 1px solid #374151 !important;
+        border-top: 1px solid #374151 !important;
+        border-radius: 6px !important;
+        color: #9ca3af !important;
+        margin-top: 4px !important;
+    }
+    div[data-testid="stButton"][data-key*="sell_"] > button:hover,
+    div[data-testid="stButton"][data-key*="confirm_"] > button:hover {
+        background: #7f1d1d !important;
+        color: #fca5a5 !important;
+    }
+
+    /* ── Inline refresh row ───────────────────────────────────────── */
+    .stSlider > div { padding-top: 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -625,6 +682,185 @@ def pnl_color(val: float) -> str:
     return "#22c55e" if val >= 0 else "#ef4444"
 
 
+# ── Plotly chart helpers ───────────────────────────────────────────────────────
+_PLOTLY_CFG = {"displayModeBar": False, "staticPlot": False}
+_DARK = "#0d1117"
+_GRID = "#1f2937"
+_FONT = dict(color="#9ca3af", family="Syne")
+_MONO = "JetBrains Mono"
+
+
+def _base_layout(**kwargs) -> dict:
+    return dict(
+        paper_bgcolor=_DARK, plot_bgcolor=_DARK, font=_FONT,
+        showlegend=False, **kwargs
+    )
+
+
+def render_chart(fig, height: int = None):
+    """Render a Plotly figure with mobile-safe config. No-op if fig is None."""
+    if fig is None:
+        return
+    if height:
+        fig.update_layout(height=height)
+    st.plotly_chart(fig, use_container_width=True, config=_PLOTLY_CFG)
+
+
+def chart_positions_pnl(positions: list):
+    """Horizontal bar chart of positions sorted by unrealized P&L %."""
+    if not positions:
+        return None
+    pairs = sorted(
+        [(float(p.get("unrealized_plpc", 0)) * 100, p.get("symbol", "")) for p in positions]
+    )
+    pcts, syms = zip(*pairs)
+    colors = ["#22c55e" if v >= 0 else "#ef4444" for v in pcts]
+    fig = go.Figure(go.Bar(
+        x=list(pcts), y=list(syms), orientation="h",
+        marker_color=colors,
+        text=[f"{v:+.2f}%" for v in pcts],
+        textposition="auto",
+        textfont=dict(family=_MONO, size=11, color="#f9fafb"),
+    ))
+    fig.update_layout(**_base_layout(
+        margin=dict(l=4, r=4, t=6, b=6),
+        height=max(160, len(positions) * 36),
+        xaxis=dict(gridcolor=_GRID, zerolinecolor="#374151",
+                   tickfont=dict(family=_MONO, size=10)),
+        yaxis=dict(tickfont=dict(family=_MONO, size=12, color="#f9fafb")),
+    ))
+    return fig
+
+
+def chart_decisions_donut(decisions: pd.DataFrame):
+    """Donut chart of BUY / SELL / HOLD distribution."""
+    if decisions.empty:
+        return None
+    counts = decisions["action"].value_counts()
+    labels = counts.index.tolist()
+    colors = [{"BUY": "#22c55e", "SELL": "#ef4444", "HOLD": "#6b7280"}.get(l, "#374151")
+              for l in labels]
+    fig = go.Figure(go.Pie(
+        labels=labels, values=counts.values.tolist(), hole=0.6,
+        marker=dict(colors=colors, line=dict(color=_DARK, width=2)),
+        textfont=dict(family=_MONO, size=11),
+        textinfo="label+percent",
+    ))
+    fig.update_layout(**_base_layout(margin=dict(l=4, r=4, t=6, b=6), height=220))
+    return fig
+
+
+def chart_research_conviction(research: pd.DataFrame):
+    """Vertical bar chart of research conviction scores, colored by sentiment."""
+    if research.empty:
+        return None
+    df = research.sort_values("conviction", ascending=False).head(12)
+    colors = [{"BULLISH": "#22c55e", "BEARISH": "#ef4444", "NEUTRAL": "#6b7280"}
+              .get(s, "#6b7280") for s in df["sentiment"]]
+    fig = go.Figure(go.Bar(
+        x=df["symbol"].tolist(),
+        y=(df["conviction"] * 100).tolist(),
+        marker_color=colors,
+        text=[f"{v:.0f}%" for v in (df["conviction"] * 100)],
+        textposition="outside",
+        textfont=dict(family=_MONO, size=10, color="#9ca3af"),
+    ))
+    fig.update_layout(**_base_layout(
+        margin=dict(l=4, r=4, t=20, b=4),
+        height=220,
+        xaxis=dict(tickfont=dict(family=_MONO, size=10, color="#f9fafb"), gridcolor=_GRID),
+        yaxis=dict(range=[0, 115], tickfont=dict(family=_MONO, size=10), gridcolor=_GRID),
+    ))
+    return fig
+
+
+def chart_cumulative_pnl(executions: pd.DataFrame):
+    """Cumulative signed notional over time (SELL positive, BUY negative)."""
+    if executions.empty:
+        return None
+    df = executions.sort_values("ts").copy()
+    df["signed"] = df.apply(
+        lambda r: float(r.get("notional", 0) or 0) * (1 if r["side"] == "SELL" else -1),
+        axis=1,
+    )
+    df["cumulative"] = df["signed"].cumsum()
+    last = df["cumulative"].iloc[-1]
+    color = "#22c55e" if last >= 0 else "#ef4444"
+    fill  = "rgba(34,197,94,0.08)" if last >= 0 else "rgba(239,68,68,0.08)"
+    fig = go.Figure(go.Scatter(
+        x=df["ts"].tolist(), y=df["cumulative"].tolist(),
+        mode="lines", line=dict(color=color, width=2),
+        fill="tozeroy", fillcolor=fill,
+    ))
+    fig.update_layout(**_base_layout(
+        margin=dict(l=4, r=4, t=6, b=4),
+        height=180,
+        xaxis=dict(gridcolor=_GRID, tickfont=dict(family=_MONO, size=9)),
+        yaxis=dict(gridcolor=_GRID, tickprefix="$", tickfont=dict(family=_MONO, size=10)),
+    ))
+    return fig
+
+
+def chart_confidence_histogram(decisions: pd.DataFrame):
+    """Histogram of decision confidence scores (0–100%)."""
+    if decisions.empty:
+        return None
+    fig = go.Figure(go.Histogram(
+        x=(decisions["confidence"] * 100).tolist(),
+        nbinsx=20,
+        marker_color="#3b82f6",
+        marker_line=dict(color=_DARK, width=1),
+    ))
+    fig.update_layout(**_base_layout(
+        margin=dict(l=4, r=4, t=6, b=4),
+        height=220,
+        bargap=0.05,
+        xaxis=dict(title=dict(text="Confidence %", font=dict(size=10)), gridcolor=_GRID,
+                   tickfont=dict(family=_MONO, size=10)),
+        yaxis=dict(gridcolor=_GRID, tickfont=dict(family=_MONO, size=10)),
+    ))
+    return fig
+
+
+@st.cache_data(ttl=120)
+def fetch_position_sparkline(symbol: str) -> list:
+    """Fetch last 35 min of 1-min closes from Alpaca data API."""
+    if not ALPACA_API_KEY:
+        return []
+    try:
+        end   = datetime.now(timezone.utc)
+        start = end - timedelta(minutes=40)
+        r = requests.get(
+            f"https://data.alpaca.markets/v2/stocks/{symbol}/bars",
+            headers={"APCA-API-KEY-ID": ALPACA_API_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET},
+            params={"timeframe": "1Min", "start": start.isoformat(),
+                    "end": end.isoformat(), "limit": 35, "feed": "iex"},
+            timeout=5,
+        )
+        r.raise_for_status()
+        return [float(b["c"]) for b in r.json().get("bars", [])]
+    except Exception:
+        return []
+
+
+def chart_sparkline(prices: list, entry: float):
+    """50px transparent sparkline with dotted entry line."""
+    if not prices:
+        return None
+    color = "#22c55e" if prices[-1] >= entry else "#ef4444"
+    fig = go.Figure(go.Scatter(
+        y=prices, mode="lines", line=dict(color=color, width=1.5),
+    ))
+    fig.add_hline(y=entry, line_dash="dot", line_color="#6b7280", line_width=1)
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=0, r=0, t=0, b=0), height=50,
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        showlegend=False,
+    )
+    return fig
+
+
 # ── Session state for tappable cards ─────────────────────────────────────────
 import json as _json
 
@@ -724,12 +960,22 @@ def _detail_panel(row: dict, section: str):
     st.markdown(html, unsafe_allow_html=True)
 
 
-# ── Sidebar ────────────────────────────────────────────────────────────────────
+# ── Inline refresh control ─────────────────────────────────────────────────────
 backend, conn = get_conn()
-refresh = st.sidebar.selectbox("Auto-refresh", [10, 30, 60, 120], index=1)
-mode_label = "📄 PAPER" if ALPACA_PAPER else "💰 LIVE"
-st.sidebar.caption(f"{mode_label} | DB: {'✅' if conn else '❌'}")
-if st.sidebar.button("Reconnect DB"):
+_rc1, _rc2, _rc3 = st.columns([3, 1, 1])
+refresh = _rc1.select_slider(
+    "refresh",
+    options=[10, 30, 60, 120],
+    value=30,
+    format_func=lambda x: f"↻ {x}s",
+    label_visibility="collapsed",
+)
+_rc2.markdown(
+    f'<div style="font-size:11px;color:#6b7280;padding-top:10px;text-align:center;">'
+    f'{"📄" if ALPACA_PAPER else "💰"} DB {"✅" if conn else "❌"}</div>',
+    unsafe_allow_html=True,
+)
+if _rc3.button("Reconnect", use_container_width=True):
     st.cache_resource.clear()
     st.rerun()
 
@@ -866,56 +1112,20 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-# ── Scanner discoveries ────────────────────────────────────────────────────────
-scanner = load_scanner()
-if not scanner.empty:
-    items_html = ""
-    st.markdown("""
-    <div class="scanner-banner">
-        <div class="scanner-title">
-            ⚡ Scanner Discoveries
-            <span class="scanner-live">LIVE</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+# ── Pre-load all data ─────────────────────────────────────────────────────────
+account    = fetch_account()
+positions  = fetch_positions()
+decisions  = load_decisions()
+executions = load_executions()
+research   = load_research()
+scanner    = load_scanner()
+iv_df      = load_iv_signals()
+insider_df = load_insider_signals()
 
-    show_all_scanner = st.toggle("Show all scanner hits", value=False, key="scanner_all")
-    scan_rows = scanner if show_all_scanner else scanner.head(4)
-
-    for idx, row in enumerate(scan_rows.itertuples()):
-        row = scan_rows.iloc[idx]
-        sc_cls = {"BULLISH": "badge-bull", "BEARISH": "badge-bear"}.get(row["sentiment"], "badge-neutral")
-        ac_cls = {"BUY": "badge-buy", "SELL": "badge-sell"}.get(row["recommended_action"], "badge-hold")
-        key    = f"scanner:{row['symbol']}:{idx}"
-        is_open = st.session_state.selected == key
-
-        st.markdown(f"""
-        <div class="card" style="margin-bottom:2px;">
-            <div class="card-header">
-                <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol" style="color:#f59e0b;">{row["symbol"]}</span></a>
-                <div class="card-badges">
-                    <span class="badge {sc_cls}">{row["sentiment"]}</span>
-                    <span class="badge {ac_cls}">{row["recommended_action"]}</span>
-                    <span class="badge badge-pct">{row["conviction_pct"]}%</span>
-                </div>
-            </div>
-            <div class="scanner-text">{str(row["summary"])[:100]}</div>
-        </div>""", unsafe_allow_html=True)
-
-        _card_button(key, row['symbol'], is_open)
-        if is_open:
-            _detail_panel(row.to_dict(), "scanner")
-
-
-# ── Portfolio KPIs ─────────────────────────────────────────────────────────────
-st.markdown('<div class="section-header">Portfolio</div>', unsafe_allow_html=True)
-account   = fetch_account()
-positions = fetch_positions()
-
+# Pre-compute account values
 if account:
     equity       = float(account.get("equity", 0))
     cash         = float(account.get("cash", 0))
-    buying_power = float(account.get("buying_power", 0))
     port_val     = float(account.get("portfolio_value", 0))
     last_equity  = float(account.get("last_equity", equity))
     day_pnl      = equity - last_equity
@@ -923,13 +1133,11 @@ if account:
     open_exp     = sum(float(p.get("market_value", 0)) for p in positions)
     open_pl      = sum(float(p.get("unrealized_pl", 0)) for p in positions)
     open_pl_pct  = (open_pl / (open_exp - open_pl) * 100) if (open_exp - open_pl) > 0 else 0
-
-    dpnl_cls = "delta-pos" if day_pnl >= 0 else "delta-neg"
-    opnl_cls = "delta-pos" if open_pl >= 0 else "delta-neg"
-
-    unsettled  = calc_unsettled_proceeds()
-    settled    = max(cash - unsettled, 0.0)
-    breakdown  = get_settlement_breakdown()
+    dpnl_cls     = "delta-pos" if day_pnl >= 0 else "delta-neg"
+    opnl_cls     = "delta-pos" if open_pl >= 0 else "delta-neg"
+    unsettled    = calc_unsettled_proceeds()
+    settled      = max(cash - unsettled, 0.0)
+    breakdown    = get_settlement_breakdown()
     if breakdown:
         detail_lines = "".join(
             f'<div style="font-size:10px;color:#6b7280;">Settles {b["date_str"]}: ${b["amount"]:,.2f}</div>'
@@ -942,288 +1150,376 @@ if account:
     else:
         t2_html = ""
 
-    st.markdown(f"""
-    <div class="metric-grid">
-        <div class="metric-card">
-            <div class="metric-label">Portfolio</div>
-            <div class="metric-value">${port_val:,.2f}</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Day P&L</div>
-            <div class="metric-value">${day_pnl:+,.2f}</div>
-            <div class="metric-delta {dpnl_cls}">{day_pnl_pct:+.2f}%</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Cash</div>
-            <div class="metric-value">${cash:,.2f}</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Settled Cash</div>
-            <div class="metric-value">${settled:,.2f}</div>
-            {t2_html}
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Open Exposure</div>
-            <div class="metric-value">${open_exp:,.2f}</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Unrealised P&L</div>
-            <div class="metric-value">${open_pl:+,.2f}</div>
-            <div class="metric-delta {opnl_cls}">{open_pl_pct:+.2f}%</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tab_portfolio, tab_signals, tab_logs = st.tabs(["Portfolio", "Signals", "Logs"])
 
-# ── Open positions ─────────────────────────────────────────────────────────────
-if positions:
-    positions_sorted = sorted(positions,
-        key=lambda p: float(p.get("unrealized_plpc", 0)), reverse=True)
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
+# ════════════════════════════════════════════════════════════════════
+# TAB 1 — PORTFOLIO
+# ════════════════════════════════════════════════════════════════════
+with tab_portfolio:
 
-    # Sell result banner
-    if st.session_state.sell_result:
-        sym_done, msg = st.session_state.sell_result
-        bg = "#052e16" if "placed" in msg.lower() else "#450a0a"
-        st.markdown(
-            f'<div style="background:{bg};border-radius:6px;padding:8px 12px;'
-            f'margin-bottom:8px;font-size:13px;">{msg}</div>',
-            unsafe_allow_html=True,
-        )
-        st.session_state.sell_result = None
-
-    for p in positions_sorted:
-        sym    = p.get("symbol", "")
-        qty    = float(p.get("qty", 0))
-        entry  = float(p.get("avg_entry_price", 0))
-        curr   = float(p.get("current_price", 0))
-        val    = float(p.get("market_value", 0))
-        pl     = float(p.get("unrealized_pl", 0))
-        pl_pct = float(p.get("unrealized_plpc", 0)) * 100
-        col    = pnl_color(pl)
-
+    # ── Portfolio KPIs ─────────────────────────────────────────────
+    st.markdown('<div class="section-header">Portfolio</div>', unsafe_allow_html=True)
+    if account:
         st.markdown(f"""
-        <div class="pos-row">
-            <div>
-                <a href="https://finance.yahoo.com/quote/{sym}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><div class="pos-symbol">{sym}</div></a>
-                <div class="pos-detail">{qty:.4f} @ ${entry:.2f} → ${curr:.2f}</div>
+        <div class="metric-grid">
+            <div class="metric-card">
+                <div class="metric-label">Portfolio</div>
+                <div class="metric-value">${port_val:,.2f}</div>
             </div>
-            <div style="text-align:right;">
-                <div class="pos-pnl" style="color:{col};">{pl_pct:+.2f}%</div>
-                <div style="font-size:11px;color:{col};">${pl:+.2f}</div>
-                <div style="font-size:10px;color:#4b5563;">${val:,.2f}</div>
+            <div class="metric-card">
+                <div class="metric-label">Day P&L</div>
+                <div class="metric-value">${day_pnl:+,.2f}</div>
+                <div class="metric-delta {dpnl_cls}">{day_pnl_pct:+.2f}%</div>
             </div>
-        </div>""", unsafe_allow_html=True)
-
-        if st.session_state.confirm_sell == sym:
-            c1, c2 = st.columns(2)
-            if c1.button(f"✅ Confirm SELL {sym}", key=f"confirm_{sym}", type="primary", use_container_width=True):
-                try:
-                    result = _alpaca_close_position(sym)
-                    if result.get("skipped") == "already_pending":
-                        st.session_state.sell_result = (sym, f"⚠️ SELL {sym} — open order already pending")
-                    elif result.get("pdt_blocked"):
-                        st.session_state.sell_result = (sym, f"⚠️ SELL {sym} blocked — PDT protection (bought today)")
-                    else:
-                        st.session_state.sell_result = (sym, f"✅ SELL {sym} order placed — ${val:,.2f}")
-                except Exception as e:
-                    st.session_state.sell_result = (sym, f"❌ Error selling {sym}: {e}")
-                st.session_state.confirm_sell = None
-                st.rerun()
-            if c2.button("Cancel", key=f"cancel_{sym}", use_container_width=True):
-                st.session_state.confirm_sell = None
-                st.rerun()
-        else:
-            if st.button(f"Sell {sym}", key=f"sell_{sym}", use_container_width=True):
-                st.session_state.confirm_sell = sym
-                st.rerun()
-
-        st.markdown("<hr style='border:0;border-top:1px solid #1f2937;margin:4px 0;'>", unsafe_allow_html=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-# ── Decision KPIs ──────────────────────────────────────────────────────────────
-st.markdown('<div class="section-header">Agent Decisions</div>', unsafe_allow_html=True)
-decisions  = load_decisions()
-executions = load_executions()
-
-if not decisions.empty:
-    acted    = decisions[decisions["action"].isin(["BUY","SELL"]) & (decisions["approved"] == 1)]
-    blocked  = decisions[decisions["action"].isin(["BUY","SELL"]) & (decisions["approved"] == 0)]
-    avg_conf = acted["confidence"].mean() * 100 if not acted.empty else 0
-    n_buy    = int((decisions["action"] == "BUY").sum())
-    n_sell   = int((decisions["action"] == "SELL").sum())
-    n_hold   = int((decisions["action"] == "HOLD").sum())
-
-    st.markdown(f"""
-    <div class="stat-row">
-        <div class="stat-box">
-            <div class="stat-val" style="color:#22c55e;">{n_buy}</div>
-            <div class="stat-lbl">BUY signals</div>
+            <div class="metric-card">
+                <div class="metric-label">Cash</div>
+                <div class="metric-value">${cash:,.2f}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Settled Cash</div>
+                <div class="metric-value">${settled:,.2f}</div>
+                {t2_html}
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Open Exposure</div>
+                <div class="metric-value">${open_exp:,.2f}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Unrealised P&L</div>
+                <div class="metric-value">${open_pl:+,.2f}</div>
+                <div class="metric-delta {opnl_cls}">{open_pl_pct:+.2f}%</div>
+            </div>
         </div>
-        <div class="stat-box">
-            <div class="stat-val" style="color:#ef4444;">{n_sell}</div>
-            <div class="stat-lbl">SELL signals</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-val" style="color:#9ca3af;">{n_hold}</div>
-            <div class="stat-lbl">HOLD signals</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-val" style="color:#22c55e;">{len(acted)}</div>
-            <div class="stat-lbl">Executed</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-val" style="color:#ef4444;">{len(blocked)}</div>
-            <div class="stat-lbl">Blocked</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-val">{avg_conf:.0f}%</div>
-            <div class="stat-lbl">Avg conf.</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-# ── Recent decisions (card list, mobile friendly) ─────────────────────────────
-if not decisions.empty:
-    with st.expander("Recent Decisions", expanded=True):
-        fc1, fc2 = st.columns(2)
-        action_f = fc1.multiselect("Action", ["BUY","SELL","HOLD"],
-                                   default=["BUY","SELL"], key="af")
-        approved_f = fc2.multiselect("Approved", ["Yes","No"],
-                                     default=["Yes","No"], key="apf")
+    # ── Positions P&L chart ────────────────────────────────────────
+    if positions:
+        render_chart(chart_positions_pnl(positions))
 
-        f = decisions.copy()
-        if action_f:
-            f = f[f["action"].isin(action_f)]
-        if approved_f:
-            vals = ([1] if "Yes" in approved_f else []) + ([0] if "No" in approved_f else [])
-            f = f[f["approved"].isin(vals)]
+    # ── Open positions ─────────────────────────────────────────────
+    if positions:
+        positions_sorted = sorted(positions,
+            key=lambda p: float(p.get("unrealized_plpc", 0)), reverse=True)
 
-        for idx, row in enumerate(f.head(30).itertuples()):
-            ab  = action_badge(row.action)
-            ub  = urgency_badge(getattr(row, "urgency", "LOW"))
-            apb = approved_badge(row.approved)
-            ts  = row.ts.strftime("%d/%m %H:%M")
-            key = f"decision:{row.symbol}:{idx}"
+        # Sell result banner
+        if st.session_state.sell_result:
+            sym_done, msg = st.session_state.sell_result
+            bg = "#052e16" if "placed" in msg.lower() else "#450a0a"
+            st.markdown(
+                f'<div style="background:{bg};border-radius:6px;padding:8px 12px;'
+                f'margin-bottom:8px;font-size:13px;">{msg}</div>',
+                unsafe_allow_html=True,
+            )
+            st.session_state.sell_result = None
+
+        st.markdown('<div class="section-header">Positions</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        for p in positions_sorted:
+            sym    = p.get("symbol", "")
+            qty    = float(p.get("qty", 0))
+            entry  = float(p.get("avg_entry_price", 0))
+            curr   = float(p.get("current_price", 0))
+            val    = float(p.get("market_value", 0))
+            pl     = float(p.get("unrealized_pl", 0))
+            pl_pct = float(p.get("unrealized_plpc", 0)) * 100
+            col    = pnl_color(pl)
+
+            st.markdown(f"""
+            <div class="pos-row">
+                <div>
+                    <a href="https://finance.yahoo.com/quote/{sym}" target="_blank"
+                       rel="noopener" style="text-decoration:none;color:inherit;">
+                        <div class="pos-symbol">{sym}</div>
+                    </a>
+                    <div class="pos-detail">{qty:.4f} @ ${entry:.2f} → ${curr:.2f}</div>
+                </div>
+                <div style="text-align:right;">
+                    <div class="pos-pnl" style="color:{col};">{pl_pct:+.2f}%</div>
+                    <div style="font-size:11px;color:{col};">${pl:+.2f}</div>
+                    <div style="font-size:10px;color:#4b5563;">${val:,.2f}</div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+            # Sparkline (silently absent outside market hours)
+            spark = fetch_position_sparkline(sym)
+            render_chart(chart_sparkline(spark, entry))
+
+            if st.session_state.confirm_sell == sym:
+                c1, c2 = st.columns(2)
+                if c1.button(f"✅ Confirm SELL {sym}", key=f"confirm_{sym}",
+                             type="primary", use_container_width=True):
+                    try:
+                        result = _alpaca_close_position(sym)
+                        if result.get("skipped") == "already_pending":
+                            st.session_state.sell_result = (sym, f"⚠️ SELL {sym} — open order already pending")
+                        elif result.get("pdt_blocked"):
+                            st.session_state.sell_result = (sym, f"⚠️ SELL {sym} blocked — PDT protection (bought today)")
+                        else:
+                            st.session_state.sell_result = (sym, f"✅ SELL {sym} order placed — ${val:,.2f}")
+                    except Exception as e:
+                        st.session_state.sell_result = (sym, f"❌ Error selling {sym}: {e}")
+                    st.session_state.confirm_sell = None
+                    st.rerun()
+                if c2.button("Cancel", key=f"cancel_{sym}", use_container_width=True):
+                    st.session_state.confirm_sell = None
+                    st.rerun()
+            else:
+                if st.button(f"Sell {sym}", key=f"sell_{sym}", use_container_width=True):
+                    st.session_state.confirm_sell = sym
+                    st.rerun()
+
+            st.markdown("<hr style='border:0;border-top:1px solid #1f2937;margin:4px 0;'>",
+                        unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Cumulative P&L + executions ────────────────────────────────
+    st.markdown('<div class="section-header">Trade History</div>', unsafe_allow_html=True)
+    if not executions.empty:
+        render_chart(chart_cumulative_pnl(executions))
+        with st.expander("Execution log"):
+            for _, row in executions.head(20).iterrows():
+                side_cls = "badge-buy" if row["side"] == "BUY" else "badge-sell"
+                ts = row["ts"].strftime("%d/%m %H:%M")
+                sl = f'SL ${float(row["stop_loss"]):.2f}' if pd.notna(row.get("stop_loss")) else ""
+                tp = f'TP ${float(row["take_profit"]):.2f}' if pd.notna(row.get("take_profit")) else ""
+                st.markdown(f"""
+                <div class="card">
+                    <div class="card-header">
+                        <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank"
+                           rel="noopener" style="text-decoration:none;color:inherit;">
+                            <span class="card-symbol">{row["symbol"]}</span>
+                        </a>
+                        <div class="card-badges">
+                            <span class="badge {side_cls}">{row["side"]}</span>
+                            <span class="badge badge-pct">${float(row.get("notional",0)):,.2f}</span>
+                        </div>
+                    </div>
+                    <div class="card-meta">{ts}{f" · {sl}" if sl else ""}{f" · {tp}" if tp else ""}</div>
+                </div>""", unsafe_allow_html=True)
+    else:
+        st.info("No executions yet.")
+
+
+# ════════════════════════════════════════════════════════════════════
+# TAB 2 — SIGNALS
+# ════════════════════════════════════════════════════════════════════
+with tab_signals:
+
+    # ── Scanner discoveries ─────────────────────────────────────────
+    if not scanner.empty:
+        st.markdown("""
+        <div class="scanner-banner">
+            <div class="scanner-title">
+                ⚡ Scanner Discoveries
+                <span class="scanner-live">LIVE</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        show_all_scanner = st.toggle("Show all scanner hits", value=False, key="scanner_all")
+        scan_rows = scanner if show_all_scanner else scanner.head(4)
+
+        for idx in range(len(scan_rows)):
+            row    = scan_rows.iloc[idx]
+            sc_cls = {"BULLISH": "badge-bull", "BEARISH": "badge-bear"}.get(row["sentiment"], "badge-neutral")
+            ac_cls = {"BUY": "badge-buy", "SELL": "badge-sell"}.get(row["recommended_action"], "badge-hold")
+            key     = f"scanner:{row['symbol']}:{idx}"
             is_open = st.session_state.selected == key
 
             st.markdown(f"""
             <div class="card" style="margin-bottom:2px;">
                 <div class="card-header">
-                    <a href="https://finance.yahoo.com/quote/{row.symbol}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol">{row.symbol}</span></a>
-                    <div class="card-badges">{ab} {ub} {apb}
-                        </div>
-                </div>
-                <div class="card-meta">{ts} · {row.confidence_pct:.0f}% confidence</div>
-                <div class="card-text">{str(getattr(row,"rationale",""))[:160]}</div>
-            </div>""", unsafe_allow_html=True)
-
-            _card_button(key, row.symbol, is_open)
-            if is_open:
-                row_dict = {c: getattr(row, c, None) for c in f.columns}
-                _detail_panel(row_dict, "decision")
-
-# ── Executions ─────────────────────────────────────────────────────────────────
-if not executions.empty:
-    with st.expander("Executions"):
-        for _, row in executions.head(20).iterrows():
-            side_cls = "badge-buy" if row["side"] == "BUY" else "badge-sell"
-            ts = row["ts"].strftime("%d/%m %H:%M")
-            sl = f'SL ${float(row["stop_loss"]):.2f}' if pd.notna(row.get("stop_loss")) else ""
-            tp = f'TP ${float(row["take_profit"]):.2f}' if pd.notna(row.get("take_profit")) else ""
-            st.markdown(f"""
-            <div class="card">
-                <div class="card-header">
-                    <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol">{row["symbol"]}</span></a>
+                    <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank"
+                       rel="noopener" style="text-decoration:none;color:inherit;">
+                        <span class="card-symbol" style="color:#f59e0b;">{row["symbol"]}</span>
+                    </a>
                     <div class="card-badges">
-                        <span class="badge {side_cls}">{row["side"]}</span>
-                        <span class="badge badge-pct">${float(row.get("notional",0)):,.2f}</span>
+                        <span class="badge {sc_cls}">{row["sentiment"]}</span>
+                        <span class="badge {ac_cls}">{row["recommended_action"]}</span>
+                        <span class="badge badge-pct">{row["conviction_pct"]}%</span>
                     </div>
                 </div>
-                <div class="card-meta">{ts} {f'· {sl}' if sl else ''} {f'· {tp}' if tp else ''}</div>
+                <div class="scanner-text">{str(row["summary"])[:100]}</div>
             </div>""", unsafe_allow_html=True)
 
-
-# ── IV Spike Monitor ──────────────────────────────────────────────────────────
-st.markdown('<div class="section-header">IV Spike Monitor</div>', unsafe_allow_html=True)
-iv_df = load_iv_signals()
-if iv_df.empty:
-    st.info("No unusual IV spikes. Monitor runs after market close.")
-else:
-    for _, row in iv_df.iterrows():
-        is_unusual   = "UNUSUAL" in str(row.get("summary", "")).upper()
-        border_color = "#f59e0b" if is_unusual else "#374151"
-        bg_color     = "#1c1404" if is_unusual else "#0d1117"
-        label        = "⚠️ UNEXPLAINED" if is_unusual else "📊 EARNINGS IV"
-        st.markdown(f"""
-        <div class="card" style="border-color:{border_color};background:{bg_color};">
-            <div class="card-header">
-                <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol" style="color:#f59e0b;">{row["symbol"]}</span></a>
-                <div class="card-badges">
-                    <span class="badge badge-watch">{label}</span>
-                    <span class="badge badge-pct">{row["conviction_pct"]}%</span>
-                </div>
-            </div>
-            <div class="card-text">{str(row["summary"])[:300]}</div>
-        </div>""", unsafe_allow_html=True)
+            _card_button(key, row['symbol'], is_open)
+            if is_open:
+                _detail_panel(row.to_dict(), "scanner")
 
 
-# ── Insider Signals ────────────────────────────────────────────────────────────
-st.markdown('<div class="section-header">Insider Signals</div>', unsafe_allow_html=True)
-insider_df = load_insider_signals()
-if insider_df.empty:
-    st.info("No insider signals in the last 14 days.")
-else:
-    for _, row in insider_df.iterrows():
-        st.markdown(f"""
-        <div class="card" style="border-color:#4c1d95;background:#12082e;">
-            <div class="card-header">
-                <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol" style="color:#a78bfa;">🔒 {row["symbol"]}</span></a>
-                <div class="card-badges">
-                    <span class="badge badge-purple">INSIDER</span>
-                    <span class="badge badge-pct">{row["conviction_pct"]}%</span>
-                </div>
-            </div>
-            <div class="card-text" style="color:#c4b5fd;">{row["summary"][:280]}</div>
-        </div>""", unsafe_allow_html=True)
+    # ── Research conviction chart ───────────────────────────────────
+    if not research.empty:
+        st.markdown('<div class="section-header">Research Conviction</div>', unsafe_allow_html=True)
+        render_chart(chart_research_conviction(research))
 
-
-# ── Research Signals ───────────────────────────────────────────────────────────
-st.markdown('<div class="section-header">Research Signals</div>', unsafe_allow_html=True)
-research = load_research()
-if research.empty:
-    st.info("No active research signals.")
-else:
-    for idx, row in enumerate(research.itertuples()):
-        row = research.iloc[idx]
-        sc_cls = {"BULLISH": "badge-bull", "BEARISH": "badge-bear", "NEUTRAL": "badge-neutral"}.get(row["sentiment"], "badge-neutral")
-        ac_cls = {"BUY": "badge-buy", "SELL": "badge-sell", "HOLD": "badge-hold", "WATCH": "badge-watch"}.get(row["recommended_action"], "badge-hold")
-        key    = f"research:{row['symbol']}:{idx}"
-        is_open = st.session_state.selected == key
+    # ── Agent Decisions KPIs ────────────────────────────────────────
+    st.markdown('<div class="section-header">Agent Decisions</div>', unsafe_allow_html=True)
+    if not decisions.empty:
+        acted    = decisions[decisions["action"].isin(["BUY","SELL"]) & (decisions["approved"] == 1)]
+        blocked  = decisions[decisions["action"].isin(["BUY","SELL"]) & (decisions["approved"] == 0)]
+        avg_conf = acted["confidence"].mean() * 100 if not acted.empty else 0
+        n_buy    = int((decisions["action"] == "BUY").sum())
+        n_sell   = int((decisions["action"] == "SELL").sum())
+        n_hold   = int((decisions["action"] == "HOLD").sum())
 
         st.markdown(f"""
-        <div class="card" style="margin-bottom:2px;">
-            <div class="card-header">
-                <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><span class="card-symbol">{row["symbol"]}</span></a>
-                <div class="card-badges">
-                    <span class="badge {sc_cls}">{row["sentiment"]}</span>
-                    <span class="badge {ac_cls}">{row["recommended_action"]}</span>
-                    <span class="badge badge-pct">{row["conviction_pct"]}%</span>
-                </div>
+        <div class="stat-row">
+            <div class="stat-box">
+                <div class="stat-val" style="color:#22c55e;">{n_buy}</div>
+                <div class="stat-lbl">BUY signals</div>
             </div>
-            <div class="card-text">{str(row["summary"])[:160]}</div>
-        </div>""", unsafe_allow_html=True)
+            <div class="stat-box">
+                <div class="stat-val" style="color:#ef4444;">{n_sell}</div>
+                <div class="stat-lbl">SELL signals</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-val" style="color:#9ca3af;">{n_hold}</div>
+                <div class="stat-lbl">HOLD signals</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-val" style="color:#22c55e;">{len(acted)}</div>
+                <div class="stat-lbl">Executed</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-val" style="color:#ef4444;">{len(blocked)}</div>
+                <div class="stat-lbl">Blocked</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-val">{avg_conf:.0f}%</div>
+                <div class="stat-lbl">Avg conf.</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        _card_button(key, row['symbol'], is_open)
-        if is_open:
-            _detail_panel(row.to_dict(), "research")
+        # Donut + histogram side by side
+        _dc1, _dc2 = st.columns(2)
+        with _dc1:
+            render_chart(chart_decisions_donut(decisions), height=220)
+        with _dc2:
+            render_chart(chart_confidence_histogram(decisions), height=220)
+
+        with st.expander("Recent Decisions", expanded=False):
+            fc1, fc2 = st.columns(2)
+            action_f   = fc1.multiselect("Action", ["BUY","SELL","HOLD"],
+                                         default=["BUY","SELL"], key="af")
+            approved_f = fc2.multiselect("Approved", ["Yes","No"],
+                                         default=["Yes","No"], key="apf")
+            f = decisions.copy()
+            if action_f:
+                f = f[f["action"].isin(action_f)]
+            if approved_f:
+                vals = ([1] if "Yes" in approved_f else []) + ([0] if "No" in approved_f else [])
+                f = f[f["approved"].isin(vals)]
+
+            for idx, row in enumerate(f.head(30).itertuples()):
+                ab  = action_badge(row.action)
+                ub  = urgency_badge(getattr(row, "urgency", "LOW"))
+                apb = approved_badge(row.approved)
+                ts  = row.ts.strftime("%d/%m %H:%M")
+                key = f"decision:{row.symbol}:{idx}"
+                is_open = st.session_state.selected == key
+                st.markdown(f"""
+                <div class="card" style="margin-bottom:2px;">
+                    <div class="card-header">
+                        <a href="https://finance.yahoo.com/quote/{row.symbol}" target="_blank"
+                           rel="noopener" style="text-decoration:none;color:inherit;">
+                            <span class="card-symbol">{row.symbol}</span>
+                        </a>
+                        <div class="card-badges">{ab} {ub} {apb}</div>
+                    </div>
+                    <div class="card-meta">{ts} · {row.confidence_pct:.0f}% confidence</div>
+                    <div class="card-text">{str(getattr(row,"rationale",""))[:160]}</div>
+                </div>""", unsafe_allow_html=True)
+                _card_button(key, row.symbol, is_open)
+                if is_open:
+                    row_dict = {c: getattr(row, c, None) for c in f.columns}
+                    _detail_panel(row_dict, "decision")
+
+    # ── IV Spike Monitor ────────────────────────────────────────────
+    st.markdown('<div class="section-header">IV Spike Monitor</div>', unsafe_allow_html=True)
+    if iv_df.empty:
+        st.info("No unusual IV spikes.")
+    else:
+        for _, row in iv_df.iterrows():
+            is_unusual   = "UNUSUAL" in str(row.get("summary", "")).upper()
+            border_color = "#f59e0b" if is_unusual else "#374151"
+            bg_color     = "#1c1404" if is_unusual else "#0d1117"
+            label        = "⚠️ UNEXPLAINED" if is_unusual else "📊 EARNINGS IV"
+            st.markdown(f"""
+            <div class="card" style="border-color:{border_color};background:{bg_color};">
+                <div class="card-header">
+                    <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank"
+                       rel="noopener" style="text-decoration:none;color:inherit;">
+                        <span class="card-symbol" style="color:#f59e0b;">{row["symbol"]}</span>
+                    </a>
+                    <div class="card-badges">
+                        <span class="badge badge-watch">{label}</span>
+                        <span class="badge badge-pct">{row["conviction_pct"]}%</span>
+                    </div>
+                </div>
+                <div class="card-text">{str(row["summary"])[:300]}</div>
+            </div>""", unsafe_allow_html=True)
+
+    # ── Insider Signals ─────────────────────────────────────────────
+    st.markdown('<div class="section-header">Insider Signals</div>', unsafe_allow_html=True)
+    if insider_df.empty:
+        st.info("No insider signals in the last 14 days.")
+    else:
+        for _, row in insider_df.iterrows():
+            st.markdown(f"""
+            <div class="card" style="border-color:#4c1d95;background:#12082e;">
+                <div class="card-header">
+                    <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank"
+                       rel="noopener" style="text-decoration:none;color:inherit;">
+                        <span class="card-symbol" style="color:#a78bfa;">🔒 {row["symbol"]}</span>
+                    </a>
+                    <div class="card-badges">
+                        <span class="badge badge-purple">INSIDER</span>
+                        <span class="badge badge-pct">{row["conviction_pct"]}%</span>
+                    </div>
+                </div>
+                <div class="card-text" style="color:#c4b5fd;">{row["summary"][:280]}</div>
+            </div>""", unsafe_allow_html=True)
+
+    # ── Research Signals ────────────────────────────────────────────
+    st.markdown('<div class="section-header">Research Signals</div>', unsafe_allow_html=True)
+    if research.empty:
+        st.info("No active research signals.")
+    else:
+        for idx, row in enumerate(research.itertuples()):
+            row = research.iloc[idx]
+            sc_cls = {"BULLISH": "badge-bull", "BEARISH": "badge-bear",
+                      "NEUTRAL": "badge-neutral"}.get(row["sentiment"], "badge-neutral")
+            ac_cls = {"BUY": "badge-buy", "SELL": "badge-sell", "HOLD": "badge-hold",
+                      "WATCH": "badge-watch"}.get(row["recommended_action"], "badge-hold")
+            key     = f"research:{row['symbol']}:{idx}"
+            is_open = st.session_state.selected == key
+            st.markdown(f"""
+            <div class="card" style="margin-bottom:2px;">
+                <div class="card-header">
+                    <a href="https://finance.yahoo.com/quote/{row["symbol"]}" target="_blank"
+                       rel="noopener" style="text-decoration:none;color:inherit;">
+                        <span class="card-symbol">{row["symbol"]}</span>
+                    </a>
+                    <div class="card-badges">
+                        <span class="badge {sc_cls}">{row["sentiment"]}</span>
+                        <span class="badge {ac_cls}">{row["recommended_action"]}</span>
+                        <span class="badge badge-pct">{row["conviction_pct"]}%</span>
+                    </div>
+                </div>
+                <div class="card-text">{str(row["summary"])[:160]}</div>
+            </div>""", unsafe_allow_html=True)
+            _card_button(key, row['symbol'], is_open)
+            if is_open:
+                _detail_panel(row.to_dict(), "research")
 
 
-# ── Live Logs ─────────────────────────────────────────────────────────────────
-st.markdown('<div class="section-header">📋 Live Logs</div>', unsafe_allow_html=True)
-with st.expander("Agent Logs", expanded=False):
+# ════════════════════════════════════════════════════════════════════
+# TAB 3 — LOGS
+# ════════════════════════════════════════════════════════════════════
+with tab_logs:
     lc1, lc2 = st.columns([2, 1])
     log_service = lc1.selectbox(
         "Service",
@@ -1231,15 +1527,13 @@ with st.expander("Agent Logs", expanded=False):
         label_visibility="collapsed",
     )
     log_lines = lc2.select_slider(
-        "Lines",
-        options=[50, 100, 150, 200, 300],
-        value=100,
+        "Lines", options=[50, 100, 150, 200, 300], value=100,
         label_visibility="collapsed",
     )
-    raw_lines = fetch_logs(log_service, log_lines)
+    raw_lines  = fetch_logs(log_service, log_lines)
     html_lines = "".join(_colorize_log_line(ln) for ln in raw_lines)
     st.markdown(
-        f'<div style="max-height:400px;overflow-y:auto;border:1px solid #374151;'
+        f'<div style="max-height:500px;overflow-y:auto;border:1px solid #374151;'
         f'border-radius:6px;padding:6px;background:#0d1117;">{html_lines}</div>',
         unsafe_allow_html=True,
     )
