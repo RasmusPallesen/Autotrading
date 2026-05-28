@@ -693,15 +693,18 @@ if st.sidebar.button("Reconnect DB"):
 
 
 # ── Log helpers ───────────────────────────────────────────────────────────────
+# Absolute project root — works regardless of the dashboard's working directory
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
 _LOG_FILE_MAP = {
-    "trading-live":     "logs/agent.log",
-    "trading-paper":    "logs/agent.log",
-    "trading-research": "logs/research.log",
+    "trading-live":     os.path.join(_PROJECT_ROOT, "logs", "agent.log"),
+    "trading-paper":    os.path.join(_PROJECT_ROOT, "logs", "agent.log"),
+    "trading-research": os.path.join(_PROJECT_ROOT, "logs", "research.log"),
 }
 
 
 def fetch_logs(service: str, n_lines: int) -> list:
-    import subprocess, os
+    import subprocess
 
     # Strategy 1: read log file directly (fastest, no subprocess needed)
     log_path = _LOG_FILE_MAP.get(service)
