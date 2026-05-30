@@ -45,6 +45,8 @@ class RiskManager:
         portfolio: dict,
         positions: list,
         min_confidence: float,
+        atr: float = None,
+        current_price: float = None,
     ) -> RiskVerdict:
         """Validate a trade decision against all risk rules."""
 
@@ -104,9 +106,20 @@ class RiskManager:
                 f"Max open positions ({self.max_open_positions}) reached.",
             )
 
-        # Position size
+        # Position size — volatility-adaptive when ATR + price are available
         requested_pct = min(decision.suggested_position_pct, self.max_position_pct)
-        notional = equity * requested_pct
+        if atr and atr > 0 and current_price and current_price > 0:
+            # Risk 1% of equity per trade, sized so the ATR×2 stop costs exactly that
+            dollar_risk = equity * 0.01
+            shares = dollar_risk / (atr * 2.0)
+            notional = shares * current_price
+            notional = min(notional, equity * self.max_position_pct)  # cap at max position
+            logger.debug(
+                "[%s] ATR sizing: equity=%.2f atr=%.4f shares=%.2f notional=%.2f",
+                decision.symbol, equity, atr, shares, notional,
+            )
+        else:
+            notional = equity * requested_pct
 
         # Early exit: if notional is already below minimum before any adjustments,
         # skip all the settlement and buying power checks — the trade is impossible
@@ -224,12 +237,23 @@ class RiskManager:
         """Record a sale for T+2 settlement tracking."""
         self.settlement.record_sale(notional)
 
-    def compute_stop_and_target(self, current_price: float, decision: TradeDecision) -> tuple:
-        """Compute stop-loss and take-profit prices."""
-        sl_pct = max(0.01, min(decision.suggested_stop_loss_pct, self.stop_loss_pct))
-        tp_pct = max(0.01, min(decision.suggested_take_profit_pct, self.take_profit_pct))
-        stop_loss = current_price * (1 - sl_pct)
-        take_profit = current_price * (1 + tp_pct)
+    def compute_stop_and_target(
+        self, current_price: float, decision: TradeDecision, atr: float = None
+    ) -> tuple:
+        """Compute stop-loss and take-profit prices. Uses ATR-based levels when available."""
+        if atr and atr > 0:
+            # ATR-based swing-trade stops: 2× ATR stop, 4× ATR target (2:1 reward/risk)
+            stop_loss = current_price - atr * 2.0
+            take_profit = current_price + atr * 4.0
+            logger.debug(
+                "[%s] ATR stops: price=%.2f atr=%.4f stop=%.2f target=%.2f",
+                decision.symbol, current_price, atr, stop_loss, take_profit,
+            )
+        else:
+            sl_pct = max(0.01, min(decision.suggested_stop_loss_pct, self.stop_loss_pct))
+            tp_pct = max(0.01, min(decision.suggested_take_profit_pct, self.take_profit_pct))
+            stop_loss = current_price * (1 - sl_pct)
+            take_profit = current_price * (1 + tp_pct)
         return stop_loss, take_profit
 
     def settlement_status(self) -> dict:
