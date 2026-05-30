@@ -1005,8 +1005,23 @@ def run_mini_loop(
     for symbol in held_symbols:
         df = bar_stream.get_bars_df(symbol)
         if df is None or len(df) < 10:
-            logger.debug("[MINI] %s buffer not ready — skipping (full sweep will cover)", symbol)
-            continue
+            # Buffer not warm yet — fall back to REST so newly-bought positions
+            # are monitored immediately rather than left unprotected for ~200 minutes.
+            try:
+                rest_bars = data_fetcher.get_bars(
+                    [symbol],
+                    lookback_bars=config.agent.indicator_lookback,
+                    timeframe="1Min",
+                )
+                df = rest_bars.get(symbol)
+                if df is not None and len(df) >= 10:
+                    logger.debug("[MINI] %s REST fallback (%d bars)", symbol, len(df))
+                else:
+                    logger.debug("[MINI] %s buffer + REST both unavailable — skipping", symbol)
+                    continue
+            except Exception as e:
+                logger.debug("[MINI] %s REST fallback failed: %s — skipping", symbol, e)
+                continue
 
         snapshot = compute_signals(symbol, df)
         if not snapshot:
@@ -1202,6 +1217,18 @@ def main():
             secret_key=config.alpaca.secret_key,
             symbols=config.watchlist.all_symbols,
         )
+        # Pre-seed buffers with recent REST history so stream indicators are
+        # accurate from the first tick instead of after ~200 minutes of warm-up.
+        try:
+            logger.info("[STREAM] Seeding buffers with REST history…")
+            seed_bars = data_fetcher.get_bars(
+                config.watchlist.all_symbols,
+                lookback_bars=200,
+                timeframe="1Min",
+            )
+            bar_stream.seed_buffers(seed_bars)
+        except Exception as seed_err:
+            logger.warning("[STREAM] Buffer seed failed (non-fatal): %s", seed_err)
         bar_stream.start()
     except Exception as e:
         logger.warning("Live bar stream unavailable — falling back to REST polling: %s", e)

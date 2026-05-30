@@ -1,7 +1,7 @@
 """
 Live bar streaming via Alpaca WebSocket.
 
-Maintains a rolling 50-bar buffer per symbol and exposes a hot_queue
+Maintains a rolling 200-bar buffer per symbol and exposes a hot_queue
 that fires whenever a bar close looks like a momentum event worth
 evaluating immediately (outside the normal 5-minute polling loop).
 
@@ -19,11 +19,12 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-MAX_BARS = 50
+MAX_BARS = 200  # 200 bars ≈ 3h20m of 1-min data; enough for EMA-50 to converge reliably
 
 # A bar close is "hot" (triggers fast evaluation) if:
 #   volume >= HOT_VOLUME_MULTIPLE × 10-bar average  AND  |bar change| >= HOT_PRICE_PCT
-# OR the close crosses above EMA-21 from below
+# OR the close crosses above EMA-21 from below (bullish entry signal)
+# OR the close crosses below EMA-21 from above on a held position (bearish exit signal)
 # OR a held position drops more than HOT_DROP_PCT in a single bar (immediate sell eval)
 HOT_VOLUME_MULTIPLE = 2.0
 HOT_PRICE_PCT       = 0.010   # 1.0%
@@ -106,6 +107,34 @@ class AlpacaBarStream:
             self._subscribe(to_add)
         if to_drop:
             self._unsubscribe(to_drop)
+
+    def seed_buffers(self, bars_map: dict) -> None:
+        """
+        Pre-populate buffers with historical bars fetched via REST.
+        Call once at startup to eliminate the ~50-minute cold-start period.
+
+        bars_map: {symbol: pd.DataFrame} as returned by AlpacaDataFetcher.get_bars().
+        Each DataFrame must have columns: open, high, low, close, volume.
+        """
+        seeded = 0
+        with self._lock:
+            for symbol, df in bars_map.items():
+                if df is None or df.empty:
+                    continue
+                if symbol not in self._buffers:
+                    self._buffers[symbol] = deque(maxlen=MAX_BARS)
+                buf = self._buffers[symbol]
+                for ts, row in df.iterrows():
+                    buf.append({
+                        "timestamp": ts,
+                        "open":   float(row.get("open",  row.get("o", 0))),
+                        "high":   float(row.get("high",  row.get("h", 0))),
+                        "low":    float(row.get("low",   row.get("l", 0))),
+                        "close":  float(row.get("close", row.get("c", 0))),
+                        "volume": float(row.get("volume", row.get("v", 0))),
+                    })
+                seeded += 1
+        logger.info("[STREAM] Seeded %d/%d symbol buffers from REST history", seeded, len(bars_map))
 
     def buffer_size(self) -> dict[str, int]:
         """Return {symbol: bar_count} for diagnostics."""
@@ -197,11 +226,20 @@ class AlpacaBarStream:
                 if abs(bar_change) >= HOT_PRICE_PCT:
                     return True
 
-        # EMA-21 upward cross (close crosses above EMA-21 from below)
+        # EMA-21 cross — upward cross is a bullish entry signal;
+        # downward cross on a held position is a bearish exit signal
         if len(closes) >= 22:
             ema21 = _ema(closes, 21)
             prev_close = closes[-2]
+            # Bullish: price crosses above EMA-21 (any symbol)
             if prev_close < ema21[-2] and bar["close"] > ema21[-1]:
+                return True
+            # Bearish: price crosses below EMA-21 on a held position → sell signal
+            if symbol in self._held and prev_close > ema21[-2] and bar["close"] < ema21[-1]:
+                logger.info(
+                    "[STREAM] HOT %s — bearish EMA-21 cross (held position), close=%.2f ema21=%.2f",
+                    symbol, bar["close"], ema21[-1],
+                )
                 return True
 
         # Held position dropping sharply — immediate SELL consideration
