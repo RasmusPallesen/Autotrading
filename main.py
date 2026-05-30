@@ -386,12 +386,6 @@ def validate_config():
 # Minimum research conviction to include a symbol in the trading cycle
 RESEARCH_GATE_THRESHOLD = 0.45  # CHANGED: was 0.55; lowered to match agent.min_confidence
 
-# Max unsignaled symbols to evaluate per tick (rotating round-robin through full universe)
-MAX_UNSIGNALED_PER_TICK = 10
-
-_unsignaled_offset: int = 0  # rotating index for unsignaled symbol batching
-
-
 def get_dynamic_symbols(
     research_store: ResearchStore,
     full_universe: list,
@@ -405,12 +399,10 @@ def get_dynamic_symbols(
     - Held positions are ALWAYS included (can't miss a sell signal)
     - Symbols with adequate research conviction (>= min_conviction) are included
     - Symbols with active but LOW conviction signals are excluded (research flagged them)
-    - Symbols with NO signal are unknown (not bad) — up to MAX_UNSIGNALED_PER_TICK
-      are included per tick, rotating through the full universe so all symbols get
-      evaluated within a few ticks even on a cold start
+    - Symbols with NO signal are skipped in the full sweep — the hot path (bar stream)
+      handles discovery for those symbols based on real-time price/volume activity
     - Returns (active_symbols, discovered_symbols, research_signals_map)
     """
-    global _unsignaled_offset
     research_signals = {}
     active_symbols = []
     discovered_symbols = []
@@ -444,18 +436,6 @@ def get_dynamic_symbols(
             # No research signal yet = neutral, not bad. Collect for rotating batch.
             unsignaled.append(symbol)
 
-    # Admit a rotating slice of unsignaled symbols so the full universe gets
-    # evaluated over time even before research signals are populated.
-    if unsignaled:
-        start = _unsignaled_offset % len(unsignaled)
-        batch = (unsignaled * 2)[start:start + MAX_UNSIGNALED_PER_TICK]
-        active_symbols.extend(s for s in batch if s not in held_symbols)
-        _unsignaled_offset = (_unsignaled_offset + MAX_UNSIGNALED_PER_TICK) % len(unsignaled)
-        logger.debug(
-            "Unsignaled batch: %d/%d symbols (offset %d)",
-            len(batch), len(unsignaled), _unsignaled_offset,
-        )
-
     # Add scanner discoveries not already in universe
     for symbol, signal in research_signals.items():
         if symbol not in full_universe:
@@ -487,9 +467,9 @@ def get_dynamic_symbols(
     if skipped:
         logger.info("Skipped (low conviction): %s", ", ".join(skipped[:10]))
     if unsignaled:
-        logger.info(
-            "Unsignaled pool: %d symbols (admitting %d this tick)",
-            len(unsignaled), min(MAX_UNSIGNALED_PER_TICK, len(unsignaled)),
+        logger.debug(
+            "Unsignaled pool: %d symbols — covered by hot path (bar stream)",
+            len(unsignaled),
         )
 
     return active_symbols, discovered_symbols, research_signals
@@ -1097,15 +1077,31 @@ def _drain_hot_queue(
     Each hot event triggers a single-symbol decide → risk → execute pass
     without waiting for the next 5-minute tick.
 
-    We cap at 5 hot events per drain call to prevent a cascade of rapid
-    events (e.g. a volatile bar run) from saturating the Claude API.
+    We cap at 10 hot events per drain call to handle busier markets now that
+    the hot criteria cover more setups. Events older than 90 seconds are
+    discarded — the bar has aged out and the signal is stale.
     """
     processed = 0
-    while processed < 5:
+    while processed < 10:
         try:
             symbol, bar_dict = bar_stream.hot_queue.get_nowait()
         except Exception:
             break
+
+        # Discard stale events — bar closed more than 90s ago
+        bar_ts = bar_dict.get("timestamp")
+        if bar_ts is not None:
+            try:
+                ts_dt = bar_ts.to_pydatetime() if hasattr(bar_ts, "to_pydatetime") else bar_ts
+                if isinstance(ts_dt, datetime):
+                    if ts_dt.tzinfo is None:
+                        ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                    age = (datetime.now(timezone.utc) - ts_dt).total_seconds()
+                    if age > 90:
+                        logger.debug("[HOT PATH] Stale event for %s (age=%.0fs) — skipped", symbol, age)
+                        continue
+            except Exception:
+                pass
 
         logger.info("[HOT PATH] %s triggered fast eval (close=%.2f)", symbol, bar_dict["close"])
 
@@ -1265,7 +1261,7 @@ def main():
     # Fast retry interval for blocked HIGH urgency signals (seconds)
     FAST_RETRY_INTERVAL = 60
     MINI_INTERVAL       = 60   # re-evaluate held positions every 1 minute
-    SWEEP_INTERVAL      = config.agent.loop_interval_seconds  # full symbol sweep (default 300s)
+    SWEEP_INTERVAL      = 900  # full sweep is a safety net — hot path handles discovery
 
     last_sweep = 0.0  # force immediate sweep on first iteration
     last_mini  = 0.0
