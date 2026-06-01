@@ -1,0 +1,28 @@
+{
+  "ai_chips": [
+    "NVDA", "AMD", "INTC", "AVGO", "QCOM",
+    "ARM", "ASML", "TSM", "MRVL", "AMAT"
+  ],
+  "ai_software": [
+    "MSFT", "GOOGL", "META", "AMZN",
+    "PLTR", "AI", "SOUN", "BBAI"
+  ],
+  "green_energy": [
+    "ENPH", "SEDG", "FSLR", "NEE", "PLUG",
+    "BE", "CHPT", "BLNK", "RUN", "ARRY"
+  ],
+  "medtech_diabetes": [
+    "NVO", "LLY", "DXCM", "ABT", "ISRG",
+    "PODD", "TNDM", "MDT", "INVA", "RYTM"
+  ],
+  "biotech": [
+    "MANE", "RXRX", "BEAM", "CRSP", "NTLA"
+  ],
+  "drone_defence": [
+    "KTOS", "AVAV", "RCAT", "NOC", "LMT",
+    "RTX", "AXON", "UMAC"
+  ],
+  "general": [
+    "AAPL", "TSLA", "COIN", "MSTR"
+  ]
+}
