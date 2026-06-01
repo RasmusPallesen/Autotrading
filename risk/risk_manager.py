@@ -121,6 +121,25 @@ class RiskManager:
         else:
             notional = equity * requested_pct
 
+        # Aggregate position cap — existing + new must not exceed max_position_pct
+        existing_position = next((p for p in positions if p["symbol"] == decision.symbol), None)
+        existing_notional = float(existing_position.get("market_value", 0)) if existing_position else 0.0
+        if existing_notional > 0:
+            max_symbol_notional = equity * self.max_position_pct
+            headroom = max(0.0, max_symbol_notional - existing_notional)
+            if headroom <= 0:
+                return RiskVerdict(
+                    False,
+                    f"Position already at max allocation "
+                    f"(existing=${existing_notional:,.2f}, cap=${max_symbol_notional:,.2f}). "
+                    f"No headroom for add-on.",
+                )
+            notional = min(notional, headroom)
+            logger.info(
+                "[%s] Add-on BUY: existing=$%.2f headroom=$%.2f new_notional=$%.2f",
+                decision.symbol, existing_notional, headroom, notional,
+            )
+
         # Early exit: if notional is already below minimum before any adjustments,
         # skip all the settlement and buying power checks — the trade is impossible
         # regardless of cash position. This avoids misleading block reasons like
