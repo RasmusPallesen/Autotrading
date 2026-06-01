@@ -10,6 +10,7 @@ RLock so the main thread can read buffers while the stream thread writes.
 """
 
 import logging
+import math
 import queue
 import threading
 from collections import deque
@@ -246,6 +247,24 @@ class AlpacaBarStream:
         if symbol in self._held and bar_change <= -HOT_DROP_PCT:
             return True
 
+        # RSI oversold bounce — momentum reversal entry signal (any symbol)
+        if len(closes) >= 15:
+            rsi = _rsi(closes, 14)
+            if not (math.isnan(rsi[-2]) or math.isnan(rsi[-1])):
+                if rsi[-2] < 30 and rsi[-1] >= 30:
+                    return True
+
+        # New 20-bar high — breakout from consolidation (any symbol)
+        if len(closes) >= 21:
+            if bar["close"] > max(closes[-21:-1]):
+                return True
+
+        # VWAP cross from below — intraday trend flip (any symbol)
+        if len(buf) >= 5:
+            vwap = _vwap(buf)
+            if buf[-2]["close"] < vwap and bar["close"] >= vwap:
+                return True
+
         return False
 
     def _run(self) -> None:
@@ -275,3 +294,34 @@ def _ema(values: list[float], period: int) -> list[float]:
     for v in values[period:]:
         result.append(v * k + result[-1] * (1 - k))
     return result
+
+
+def _rsi(values: list[float], period: int) -> list[float]:
+    """Wilder RSI — returns list same length as input (NaN-padded at start)."""
+    if len(values) < period + 1:
+        return [float("nan")] * len(values)
+    result = [float("nan")] * period
+    gains, losses = [], []
+    for i in range(1, period + 1):
+        d = values[i] - values[i - 1]
+        gains.append(max(d, 0))
+        losses.append(max(-d, 0))
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    rs = avg_gain / avg_loss if avg_loss > 0 else float("inf")
+    result.append(100 - 100 / (1 + rs))
+    for i in range(period + 1, len(values)):
+        d = values[i] - values[i - 1]
+        avg_gain = (avg_gain * (period - 1) + max(d, 0)) / period
+        avg_loss = (avg_loss * (period - 1) + max(-d, 0)) / period
+        rs = avg_gain / avg_loss if avg_loss > 0 else float("inf")
+        result.append(100 - 100 / (1 + rs))
+    return result
+
+
+def _vwap(buf: list[dict]) -> float:
+    """Dollar-volume weighted average price over the buffer."""
+    total_vol = sum(b["volume"] for b in buf)
+    if total_vol == 0:
+        return buf[-1]["close"]
+    return sum(b["close"] * b["volume"] for b in buf) / total_vol

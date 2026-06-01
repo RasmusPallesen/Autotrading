@@ -51,6 +51,7 @@ Portfolio risk rules — hard constraints, not suggestions:
 - Maximum {max_pos} simultaneous open positions; do not suggest BUY if portfolio is at capacity
 - Never suggest position_pct > {max_pos_pct:.2f} regardless of confidence
 - Only BUY if buying power > ${cash_reserve:.0f} (minimum cash reserve enforced externally)
+- To add to an existing position, set action=BUY; the risk manager caps the add-on at remaining headroom shown in EXISTING POSITION; do NOT suggest BUY if headroom is $0
 
 Technical indicator interpretation (use these thresholds when reading the MARKET SNAPSHOT):
 - RSI: < 30 = oversold/strong BUY candidate; 30-45 = weak/recovering; 50-70 = bullish momentum; > 70 = overbought/SELL candidate
@@ -196,6 +197,7 @@ class AIDecisionEngine:
         import config as _cfg
         min_conf = getattr(_cfg.agent, "min_confidence", 0.55)
         self._system_prompt = _build_system_prompt(risk_config, min_confidence=min_conf)
+        self._max_position_pct = risk_config.max_position_pct
 
     def decide(
         self,
@@ -284,12 +286,17 @@ class AIDecisionEngine:
         ]
 
         if existing_position:
+            equity = portfolio_context.get("equity", 0)
+            market_value = float(existing_position.get("market_value", 0))
+            headroom = max(0.0, equity * self._max_position_pct - market_value)
             lines += [
                 "",
                 "=== EXISTING POSITION ===",
                 f"Qty: {existing_position.get('qty', 0)}",
-                f"Avg entry: {existing_position.get('avg_entry_price', 0):.4f}",
-                f"Unrealised P&L: {existing_position.get('unrealized_plpc', 0) * 100:.2f}%",
+                f"Avg entry: ${float(existing_position.get('avg_entry_price', 0)):.2f}",
+                f"Current value: ${market_value:,.2f}",
+                f"Unrealised P&L: {float(existing_position.get('unrealized_plpc', 0)) * 100:.2f}%",
+                f"Headroom to add: ${headroom:,.2f} (max_position_pct cap — set action=BUY to add; $0 means at cap)",
             ]
         else:
             lines.append("\nNo existing position.")
