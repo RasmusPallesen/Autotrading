@@ -48,6 +48,41 @@ logger = logging.getLogger("main")
 # Minimum conviction for a scanner discovery to be traded
 SCANNER_TRADE_THRESHOLD = float(config.agent.min_confidence)
 
+# ── Dynamic stream subscriptions ─────────────────────────────────────────────
+# Symbols discovered by scanners that are not in the core watchlist.
+# Subscribed to the WebSocket stream within 60 seconds of discovery so the
+# hot path watches them immediately — long before the next full sweep.
+_dynamic_stream_symbols: set = set()
+
+
+def _sync_dynamic_stream(bar_stream, research_store, core_symbols: set) -> None:
+    """
+    Fast-track scanner discoveries to the stream within 60s of being found.
+
+    Any symbol in the research store with conviction >= 0.45 that isn't already
+    in the core watchlist gets subscribed immediately, without waiting for the
+    next full sweep (which runs every 15 minutes).
+    """
+    global _dynamic_stream_symbols
+    try:
+        active = research_store.get_all_active()
+    except Exception:
+        return
+    new_symbols = {
+        s["symbol"] for s in active
+        if s["symbol"] not in core_symbols
+        and float(s.get("conviction", 0)) >= 0.45
+    }
+    to_add = new_symbols - _dynamic_stream_symbols
+    if to_add:
+        all_current = core_symbols | _dynamic_stream_symbols | to_add
+        bar_stream.update_symbols(list(all_current))
+        _dynamic_stream_symbols.update(to_add)
+        logger.info(
+            "[STREAM] Fast-tracked %d discovered symbol(s) to stream: %s",
+            len(to_add), sorted(to_add)[:5],
+        )
+
 
 from datetime import time as _dtime
 
@@ -391,6 +426,7 @@ def get_dynamic_symbols(
     full_universe: list,
     positions_map: dict = None,
     min_conviction: float = RESEARCH_GATE_THRESHOLD,
+    extended_universe: set = None,
 ) -> tuple:
     """
     Build the active trading symbol list from research signals.
@@ -401,6 +437,8 @@ def get_dynamic_symbols(
     - Symbols with active but LOW conviction signals are excluded (research flagged them)
     - Symbols with NO signal are skipped in the full sweep — the hot path (bar stream)
       handles discovery for those symbols based on real-time price/volume activity
+    - extended_universe: dynamically-subscribed symbols (scanner discoveries fast-tracked
+      to the stream); evaluated here when they have a conviction signal
     - Returns (active_symbols, discovered_symbols, research_signals_map)
     """
     research_signals = {}
@@ -435,6 +473,20 @@ def get_dynamic_symbols(
         else:
             # No research signal yet = neutral, not bad. Collect for rotating batch.
             unsignaled.append(symbol)
+
+    # Add dynamically-subscribed symbols that now have a signal
+    if extended_universe:
+        for symbol in extended_universe:
+            if symbol in active_symbols:
+                continue
+            signal = research_signals.get(symbol)
+            if signal:
+                conviction = float(signal.get("conviction", 0))
+                if conviction >= min_conviction:
+                    active_symbols.append(symbol)
+                    if symbol not in full_universe:
+                        discovered_symbols.append(symbol)
+                    logger.debug("[%s] Extended universe symbol admitted (conviction=%.0f%%)", symbol, conviction * 100)
 
     # Add scanner discoveries not already in universe
     for symbol, signal in research_signals.items():
@@ -526,6 +578,7 @@ def run_loop(
             full_universe,
             positions_map=positions_map,
             min_conviction=RESEARCH_GATE_THRESHOLD,
+            extended_universe=_dynamic_stream_symbols,
         )
 
     logger.info(
@@ -1310,6 +1363,12 @@ def main():
             # ── Mini loop (every MINI_INTERVAL seconds, between sweeps) ────────
             elif bar_stream and now - last_mini >= MINI_INTERVAL:
                 try:
+                    # Fast-track any newly discovered symbols to the stream
+                    if research_store:
+                        _sync_dynamic_stream(
+                            bar_stream, research_store,
+                            set(config.watchlist.all_symbols),
+                        )
                     positions = data_fetcher.get_positions()
                     held = [p["symbol"] for p in positions]
                     run_mini_loop(

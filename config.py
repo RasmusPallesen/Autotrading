@@ -3,6 +3,7 @@ Central configuration for the trading agent.
 All secrets are loaded from environment variables — never hardcode keys here.
 """
 
+import json
 import os
 from dataclasses import dataclass, field
 from typing import List
@@ -47,73 +48,31 @@ class RiskConfig:
     min_settled_cash_reserve: float = 30.0   # Always keep $30 settled for HIGH urgency signals
 
 
-@dataclass
 class WatchlistConfig:
+    """
+    Loads the trading universe from watchlist.json (same directory as config.py).
+    Edit watchlist.json and restart the agent to change the universe — no code change needed.
+    """
 
-    # ── AI & Chip Manufacturing ────────────────────────────────────────────────
-    ai_chips: List[str] = field(default_factory=lambda: [
-        "NVDA", "AMD", "INTC", "AVGO", "QCOM",
-        "ARM", "ASML", "TSM", "MRVL", "AMAT",
-    ])
+    _WATCHLIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.json")
 
-    # ── AI Software & Platforms ────────────────────────────────────────────────
-    ai_software: List[str] = field(default_factory=lambda: [
-        "MSFT", "GOOGL", "META", "AMZN",
-        "PLTR", "AI", "SOUN", "BBAI",
-    ])
+    crypto: List[str] = ["BTC-USD", "ETH-USD", "SOL-USD"]
 
-    # ── Green Energy Technology ────────────────────────────────────────────────
-    green_energy: List[str] = field(default_factory=lambda: [
-        "ENPH", "SEDG", "FSLR", "NEE", "PLUG",
-        "BE", "CHPT", "BLNK", "RUN", "ARRY",
-    ])
+    def _load(self) -> dict:
+        with open(self._WATCHLIST_PATH, encoding="utf-8") as f:
+            return json.load(f)
 
-    # ── MedTech — Diabetes Treatment & Monitoring ──────────────────────────────
-    medtech_diabetes: List[str] = field(default_factory=lambda: [
-        "NVO", "LLY", "DXCM", "ABT", "ISRG",
-        "PODD", "TNDM", "MDT", "INVA", "RYTM",
-    ])
-
-    # ── Biotech & Clinical Stage ───────────────────────────────────────────────
-    biotech: List[str] = field(default_factory=lambda: [
-        "MANE", "RXRX", "BEAM", "CRSP", "NTLA",
-    ])
-
-    # ── Drone & Defence Technology ─────────────────────────────────────────────
-    drone_defence: List[str] = field(default_factory=lambda: [
-        "KTOS",   # Kratos Defence — autonomous combat drones, AI targeting
-        "AVAV",   # AeroVironment — Switchblade loitering munition
-        "RCAT",   # Red Cat Holdings — Teal drones, US Army standard
-        "NOC",    # Northrop Grumman — Global Hawk surveillance drones
-        "LMT",    # Lockheed Martin — F-35, missile defence
-        "RTX",    # RTX/Raytheon — Coyote counter-drone, loitering munitions
-        "AXON",   # Axon Enterprise — drone-mounted systems
-        "UMAC",   # Unusual Machines — US-made drones + counter-drone
-    ])
-
-    # ── General (broad market / crypto proxy) ──────────────────────────────────
-    general: List[str] = field(default_factory=lambda: [
-        "AAPL", "TSLA", "COIN", "MSTR",
-    ])
-
-    # ── Active trading list (evaluated every tick) ─────────────────────────────
-    # CHANGED: Expanded from 24 to all 52 symbols for high-velocity rotation
-    @property
-    def stocks(self) -> List[str]:
-        return self.all_symbols  # Trade the full universe every tick
-
-    # ── Full research universe (all symbols monitored) ─────────────────────────
     @property
     def all_symbols(self) -> List[str]:
-        return list(dict.fromkeys(
-            self.ai_chips + self.ai_software + self.green_energy +
-            self.medtech_diabetes + self.biotech + self.drone_defence +
-            self.general
-        ))
+        data = self._load()
+        combined: List[str] = []
+        for symbols in data.values():
+            combined.extend(symbols)
+        return list(dict.fromkeys(combined))
 
-    crypto: List[str] = field(default_factory=lambda: [
-        "BTC-USD", "ETH-USD", "SOL-USD",
-    ])
+    @property
+    def stocks(self) -> List[str]:
+        return self.all_symbols
 
 
 @dataclass
