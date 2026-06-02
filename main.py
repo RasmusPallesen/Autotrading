@@ -54,6 +54,13 @@ SCANNER_TRADE_THRESHOLD = float(config.agent.min_confidence)
 # hot path watches them immediately — long before the next full sweep.
 _dynamic_stream_symbols: set = set()
 
+# ── Dedup: last Claude evaluation timestamp per symbol ───────────────────────
+# Updated by both the hot path and the mini loop after every AI decide() call.
+# The mini loop checks this before evaluating — if the symbol was already
+# evaluated within MINI_INTERVAL seconds (by the hot path or a prior mini tick),
+# it skips the call to avoid paying for the same decision twice.
+_last_evaluated: dict = {}  # symbol → float (time.time())
+
 
 def _sync_dynamic_stream(bar_stream, research_store, core_symbols: set) -> None:
     """
@@ -1036,6 +1043,16 @@ def run_mini_loop(
     positions_map = {p["symbol"]: p for p in positions}
 
     for symbol in held_symbols:
+        # Skip if the hot path already evaluated this symbol within the last
+        # MINI_INTERVAL seconds — avoids paying for the same decision twice.
+        last_eval = _last_evaluated.get(symbol, 0)
+        if time.time() - last_eval < MINI_INTERVAL:
+            logger.debug(
+                "[MINI] %s skipped — hot path evaluated %.0fs ago",
+                symbol, time.time() - last_eval,
+            )
+            continue
+
         df = bar_stream.get_bars_df(symbol)
         if df is None or len(df) < 10:
             # Buffer not warm yet — fall back to REST so newly-bought positions
@@ -1079,6 +1096,7 @@ def run_mini_loop(
             research_signal=research_signal,
             earnings_event=earnings_event,
         )
+        _last_evaluated[symbol] = time.time()
         if not decision or decision.action == "HOLD":
             logger.debug(
                 "[MINI] %s → HOLD (conf=%.0f%%)",
@@ -1199,6 +1217,7 @@ def _drain_hot_queue(
                 research_signal=research_signal,
                 earnings_event=earnings_events.get(symbol),
             )
+            _last_evaluated[symbol] = time.time()
 
             if not decision or decision.action == "HOLD":
                 logger.debug("[HOT PATH] %s → HOLD (%.0f%% conf)", symbol, (decision.confidence if decision else 0) * 100)
