@@ -49,7 +49,7 @@ logger = logging.getLogger("main")
 SCANNER_TRADE_THRESHOLD = float(config.agent.min_confidence)
 
 # Loop cadence constants (module-level so run_mini_loop and _drain_hot_queue can reference them)
-MINI_INTERVAL  = 60   # seconds — re-evaluate held positions
+MINI_INTERVAL  = 180  # seconds — re-evaluate held positions (3 min; hot path covers urgent moves)
 SWEEP_INTERVAL = 900  # seconds — full symbol sweep (hot path is primary discovery)
 
 # ── Dynamic stream subscriptions ─────────────────────────────────────────────
