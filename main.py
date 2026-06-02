@@ -1202,6 +1202,16 @@ def _drain_hot_queue(
 
             positions_map = {p["symbol"]: p for p in positions}
 
+            # Skip Claude for unowned symbols on bearish bars — we only want BUY
+            # signals for new entries; a SELL rec on an unowned stock is worthless.
+            _chg = snapshot.price_change_pct_1h
+            if symbol not in positions_map and (_chg is None or _chg < 0):
+                logger.debug(
+                    "[HOT PATH] %s not held + bearish/flat (1h chg=%s) — skipping Claude",
+                    symbol, f"{_chg:.2f}%" if _chg is not None else "N/A",
+                )
+                continue
+
             # Research signal if available
             research_signal = None
             try:
