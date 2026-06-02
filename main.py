@@ -1105,7 +1105,7 @@ def run_mini_loop(
 
         price = data_fetcher.get_latest_price(symbol)
         if decision.action == "SELL" and symbol in positions_map:
-            result = executor.sell(symbol, positions_map[symbol]["qty"])
+            result = executor.sell(symbol, close_all=True)
             store.log_execution(symbol, "SELL", float(positions_map[symbol]["market_value"]), price, None, None)
             logger.info("[MINI] SELL %s executed: %s", symbol, result)
         elif decision.action == "BUY" and symbol not in positions_map:
@@ -1226,7 +1226,7 @@ def _drain_hot_queue(
                     store.log_execution(symbol, "BUY", verdict.adjusted_notional, price, stop, target)
                     logger.info("[HOT PATH] BUY %s executed: %s", symbol, result)
                 elif decision.action == "SELL" and symbol in positions_map:
-                    result = executor.sell(symbol, positions_map[symbol]["qty"])
+                    result = executor.sell(symbol, close_all=True)
                     store.log_execution(symbol, "SELL", float(positions_map[symbol]["market_value"]), price, None, None)
                     logger.info("[HOT PATH] SELL %s executed: %s", symbol, result)
             else:

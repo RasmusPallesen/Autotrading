@@ -10,6 +10,7 @@ Error handling improvements:
 """
 
 import logging
+import math
 import os
 from typing import Optional
 
@@ -226,7 +227,7 @@ class AlpacaExecutor:
 
             order_req = self._MarketOrderRequest(
                 symbol=symbol,
-                qty=round(qty, 6),
+                qty=math.floor(qty * 1_000_000) / 1_000_000,  # truncate, never round up
                 side=self._OrderSide.SELL,
                 time_in_force=self._TimeInForce.DAY,
             )
