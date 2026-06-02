@@ -5,6 +5,7 @@ Sends market snapshots to Claude and parses structured trade decisions.
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 
@@ -354,8 +355,12 @@ class AIDecisionEngine:
 
     def _parse_response(self, raw: str, symbol: str) -> TradeDecision:
         try:
-            clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            data = json.loads(clean)
+            # Extract the first {...} block — handles preamble/postamble text and
+            # any markdown fence variation Claude might produce despite instructions.
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if not match:
+                raise json.JSONDecodeError("No JSON object found in response", raw, 0)
+            data = json.loads(match.group())
             return TradeDecision(
                 symbol=data.get("symbol", symbol),
                 action=data.get("action", "HOLD"),
