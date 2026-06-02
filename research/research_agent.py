@@ -17,6 +17,7 @@ import os
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -894,8 +895,11 @@ def main():
     _last_deep_research = None  # Track when last full research cycle ran
     _research_signals_map = {}
 
+    logger.info("All monitors initialised — entering research loop")
+
     while running:
         now = datetime.now(timezone.utc)
+        logger.debug("[LOOP] Starting loop iteration")
 
         # Universe scan — runs every 5 minutes during market hours
         # Discovers previously unknown momentum stocks for intraday monitoring
@@ -904,10 +908,20 @@ def main():
             (now - _last_universe_scan).total_seconds() >= 300
         )):
             try:
-                _universe_candidates = universe_scanner.scan(
-                    existing_watchlist=config.watchlist.all_symbols
-                )
+                logger.info("[LOOP] Running universe scan...")
+                with ThreadPoolExecutor(max_workers=1) as _pool:
+                    _fut = _pool.submit(
+                        universe_scanner.scan,
+                        existing_watchlist=config.watchlist.all_symbols,
+                    )
+                    try:
+                        _universe_candidates = _fut.result(timeout=45)
+                    except FuturesTimeoutError:
+                        logger.warning("[LOOP] Universe scan timed out (45s) — skipping this cycle")
+                        _fut.cancel()
+                        _universe_candidates = []
                 _last_universe_scan = now
+                logger.info("[LOOP] Universe scan done: %d candidates", len(_universe_candidates))
                 if _universe_candidates:
                     logger.info(
                         "Universe scan: %d new candidates -- %s",
@@ -922,8 +936,10 @@ def main():
 
         # Load current research signals for intraday fundamental gate
         try:
+            logger.debug("[LOOP] Loading active signals from DB")
             active_sigs = store.get_all_active()
             _research_signals_map = {s["symbol"]: s for s in active_sigs}
+            logger.debug("[LOOP] Loaded %d active signals", len(_research_signals_map))
         except Exception:
             pass
 
@@ -936,6 +952,7 @@ def main():
         if should_run_deep:
             # SLOW CYCLE: Full research (SEC, insider, Claude analysis, everything)
             try:
+                logger.info("[LOOP] Calling run_research_cycle")
                 run_research_cycle(
                     analyst, store, scanner,
                     earnings_cal, insider_monitor, iv_monitor,
