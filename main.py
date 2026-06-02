@@ -48,6 +48,10 @@ logger = logging.getLogger("main")
 # Minimum conviction for a scanner discovery to be traded
 SCANNER_TRADE_THRESHOLD = float(config.agent.min_confidence)
 
+# Loop cadence constants (module-level so run_mini_loop and _drain_hot_queue can reference them)
+MINI_INTERVAL  = 60   # seconds — re-evaluate held positions
+SWEEP_INTERVAL = 900  # seconds — full symbol sweep (hot path is primary discovery)
+
 # ── Dynamic stream subscriptions ─────────────────────────────────────────────
 # Symbols discovered by scanners that are not in the core watchlist.
 # Subscribed to the WebSocket stream within 60 seconds of discovery so the
@@ -1332,8 +1336,6 @@ def main():
 
     # Fast retry interval for blocked HIGH urgency signals (seconds)
     FAST_RETRY_INTERVAL = 60
-    MINI_INTERVAL       = 60   # re-evaluate held positions every 1 minute
-    SWEEP_INTERVAL      = 900  # full sweep is a safety net — hot path handles discovery
 
     last_sweep = 0.0  # force immediate sweep on first iteration
     last_mini  = 0.0
