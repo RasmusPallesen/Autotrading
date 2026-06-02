@@ -110,10 +110,10 @@ def check_market_regime(alpaca_config) -> tuple:
     When False, the main loop skips new BUYs but still evaluates SELLs.
 
     Checks:
-      1. SPY is above its 200-day SMA — the most battle-tested macro filter.
-         Historical impact: max drawdown 83% → 29% (1929–2019 study).
+      1. SPY AND QQQ both below their 200-day SMA — blocks new longs only when
+         both broad market AND tech/AI are in downtrends. If QQQ holds up while
+         SPY dips (sector rotation into AI), buys remain open.
       2. VIX rank (percentile of past 252 days) is below 70.
-         Historical impact: max drawdown −32% in 2024-2025 momentum backtests.
 
     Both checks fail gracefully — a data error returns (True, reason) so
     trading is never blocked by a missing API response.
@@ -131,31 +131,33 @@ def check_market_regime(alpaca_config) -> tuple:
         "APCA-API-SECRET-KEY": alpaca_config.secret_key,
     }
 
-    # ── 1. SPY 200-day SMA ────────────────────────────────────────────────────
-    spy_ok = True
-    spy_detail = "SPY check unavailable"
-    try:
-        resp = _req.get(
-            "https://data.alpaca.markets/v2/stocks/SPY/bars",
-            headers=headers,
-            params={"timeframe": "1Day", "limit": 220, "adjustment": "raw", "feed": "iex"},
-            timeout=8,
-        )
-        resp.raise_for_status()
-        bars = resp.json().get("bars", [])
-        if len(bars) >= 200:
-            closes = _pd.Series([b["c"] for b in bars])
-            sma200 = closes.rolling(200).mean().iloc[-1]
-            spy_close = closes.iloc[-1]
-            spy_ok = spy_close > sma200
-            spy_detail = (
-                f"SPY {spy_close:.2f} {'>' if spy_ok else '<'} 200d SMA {sma200:.2f}"
+    def _sma200_check(ticker: str) -> tuple:
+        """Returns (above_sma, detail_str). Fails open on error."""
+        try:
+            resp = _req.get(
+                f"https://data.alpaca.markets/v2/stocks/{ticker}/bars",
+                headers=headers,
+                params={"timeframe": "1Day", "limit": 220, "adjustment": "raw", "feed": "iex"},
+                timeout=8,
             )
-        else:
-            spy_detail = f"SPY bars insufficient ({len(bars)} bars)"
-    except Exception as e:
-        spy_detail = f"SPY check error: {e}"
-        logger.debug("Regime SPY check failed: %s", e)
+            resp.raise_for_status()
+            bars = resp.json().get("bars", [])
+            if len(bars) >= 200:
+                closes = _pd.Series([b["c"] for b in bars])
+                sma200 = closes.rolling(200).mean().iloc[-1]
+                price = closes.iloc[-1]
+                above = price > sma200
+                return above, f"{ticker} {price:.2f} {'>' if above else '<'} 200d SMA {sma200:.2f}"
+            return True, f"{ticker} bars insufficient ({len(bars)})"
+        except Exception as e:
+            logger.debug("Regime %s check failed: %s", ticker, e)
+            return True, f"{ticker} check error: {e}"
+
+    # ── 1. SPY + QQQ 200-day SMA — block only if BOTH are below ──────────────
+    spy_ok, spy_detail = _sma200_check("SPY")
+    qqq_ok, qqq_detail = _sma200_check("QQQ")
+    # Both below = confirmed broad+tech downtrend; either above = allow buys
+    sma_ok = spy_ok or qqq_ok
 
     # ── 2. VIX rank (CBOE public CSV) ─────────────────────────────────────────
     vix_ok = True
@@ -182,8 +184,8 @@ def check_market_regime(alpaca_config) -> tuple:
         vix_detail = f"VIX check error: {e}"
         logger.debug("Regime VIX check failed: %s", e)
 
-    regime_ok = spy_ok and vix_ok
-    reason = f"{spy_detail} | {vix_detail}"
+    regime_ok = sma_ok and vix_ok
+    reason = f"{spy_detail} | {qqq_detail} | {vix_detail}"
     if not regime_ok:
         logger.warning("[REGIME] Unfavorable — BUYs paused. %s", reason)
     else:
