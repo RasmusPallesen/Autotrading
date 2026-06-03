@@ -839,17 +839,18 @@ def main():
         )):
             try:
                 logger.info("[LOOP] Running universe scan...")
-                with ThreadPoolExecutor(max_workers=1) as _pool:
-                    _fut = _pool.submit(
-                        universe_scanner.scan,
-                        existing_watchlist=config.watchlist.all_symbols,
-                    )
-                    try:
-                        _universe_candidates = _fut.result(timeout=45)
-                    except FuturesTimeoutError:
-                        logger.warning("[LOOP] Universe scan timed out (45s) — skipping this cycle")
-                        _fut.cancel()
-                        _universe_candidates = []
+                _pool = ThreadPoolExecutor(max_workers=1)
+                _fut = _pool.submit(
+                    universe_scanner.scan,
+                    existing_watchlist=config.watchlist.all_symbols,
+                )
+                try:
+                    _universe_candidates = _fut.result(timeout=45)
+                except FuturesTimeoutError:
+                    logger.warning("[LOOP] Universe scan timed out (45s) — skipping this cycle")
+                    _universe_candidates = []
+                finally:
+                    _pool.shutdown(wait=False)  # Don't wait for stuck threads
                 _last_universe_scan = now
                 logger.info("[LOOP] Universe scan done: %d candidates", len(_universe_candidates))
                 if _universe_candidates:
