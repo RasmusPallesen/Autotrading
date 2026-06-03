@@ -50,6 +50,9 @@ class ResearchStore:
             connect_timeout=10,
         )
         self.conn.autocommit = True
+        # Prevent runaway queries from blocking the research loop indefinitely
+        with self.conn.cursor() as cur:
+            cur.execute("SET statement_timeout = '30s'")
         self._backend = "postgres"
         logger.info("ResearchStore connected to PostgreSQL")
 
