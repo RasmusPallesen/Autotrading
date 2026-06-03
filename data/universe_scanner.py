@@ -158,19 +158,25 @@ class UniverseScanner:
         candidates: Dict[str, UniverseCandidate] = {}
 
         # Source 1: Alpaca most-actives
+        logger.info("[SCAN] Fetching Alpaca most-actives...")
         for c in self._fetch_alpaca_most_actives():
             if self._should_include(c, existing_watchlist):
                 candidates[c.symbol] = c
+        logger.info("[SCAN] Alpaca most-actives done (%d candidates so far)", len(candidates))
 
         # Source 2: Yahoo Finance movers
+        logger.info("[SCAN] Fetching Yahoo Finance movers...")
         for c in self._fetch_yahoo_movers():
             if c.symbol not in candidates and self._should_include(c, existing_watchlist):
                 candidates[c.symbol] = c
+        logger.info("[SCAN] Yahoo movers done (%d candidates so far)", len(candidates))
 
         # Source 3: Sector sympathy
+        logger.info("[SCAN] Checking sector sympathy...")
         for c in self._check_sector_sympathy(existing_watchlist):
             if c.symbol not in candidates and self._should_include(c, existing_watchlist):
                 candidates[c.symbol] = c
+        logger.info("[SCAN] Sector sympathy done (%d candidates total)", len(candidates))
 
         # Score and rank
         ranked = self._rank(list(candidates.values()))
