@@ -1151,17 +1151,6 @@ if account:
     unsettled    = calc_unsettled_proceeds()
     settled      = max(cash - unsettled, 0.0)
     breakdown    = get_settlement_breakdown()
-    if breakdown:
-        detail_lines = "".join(
-            f'<div style="font-size:10px;color:#6b7280;">Settles {b["date_str"]}: ${b["amount"]:,.2f}</div>'
-            for b in breakdown
-        )
-        t2_html = (
-            f'<div style="font-size:10px;color:#9ca3af;margin-top:3px;">'
-            f'T+2 pending: ${unsettled:,.2f}</div>{detail_lines}'
-        )
-    else:
-        t2_html = ""
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tab_portfolio, tab_signals = st.tabs(["Portfolio", "Signals"])
@@ -1193,7 +1182,6 @@ with tab_portfolio:
             <div class="metric-card">
                 <div class="metric-label">Settled Cash</div>
                 <div class="metric-value">${settled:,.2f}</div>
-                {t2_html}
             </div>
             <div class="metric-card">
                 <div class="metric-label">Open Exposure</div>
@@ -1206,6 +1194,13 @@ with tab_portfolio:
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+    if breakdown:
+        lines = "  \n".join(
+            f"Settles {b['date_str']}: **${b['amount']:,.2f}**"
+            for b in breakdown
+        )
+        st.caption(f"T+2 pending ${unsettled:,.2f} — {lines}")
 
     # ── Positions P&L chart ────────────────────────────────────────
     if positions:
