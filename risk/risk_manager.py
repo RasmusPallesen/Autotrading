@@ -176,28 +176,40 @@ class RiskManager:
             # Non-HIGH trades must leave the scaled reserve untouched
             usable = max(0.0, settled - scaled_reserve)
             if notional > usable:
-                return RiskVerdict(
-                    False,
-                    f"T+2 settlement block: Insufficient settled cash (reserve protected). "
-                    f"Requested: ${notional:,.2f} | "
-                    f"Available after ${scaled_reserve:.0f} reserve: ${usable:,.2f} | "
-                    f"Unsettled (T+2 pending): ${self.settlement.unsettled_amount():,.2f}"
+                if usable < min_trade:
+                    return RiskVerdict(
+                        False,
+                        f"T+2 settlement block: Settled cash after ${scaled_reserve:.0f} reserve "
+                        f"(${usable:.2f}) below minimum trade size (${min_trade:.0f}). "
+                        f"Unsettled (T+2 pending): ${self.settlement.unsettled_amount():,.2f}"
+                    )
+                notional = usable
+                logger.info(
+                    "[%s] Notional scaled to $%.2f to fit settled cash "
+                    "(after $%.0f reserve; was $%.2f)",
+                    decision.symbol, notional, scaled_reserve, equity * requested_pct,
                 )
         else:
             # HIGH urgency can use full settled cash including reserve
             if notional > settled:
-                return RiskVerdict(
-                    False,
-                    f"T+2 settlement block (HIGH urgency -- reserve waived): "
-                    f"Requested: ${notional:,.2f} | "
-                    f"Settled: ${settled:,.2f} | "
-                    f"Unsettled (T+2 pending): ${self.settlement.unsettled_amount():,.2f}"
+                if settled < min_trade:
+                    return RiskVerdict(
+                        False,
+                        f"T+2 settlement block (HIGH urgency): "
+                        f"Settled cash ${settled:.2f} below minimum trade size (${min_trade:.0f}). "
+                        f"Unsettled (T+2 pending): ${self.settlement.unsettled_amount():,.2f}"
+                    )
+                notional = settled * 0.95
+                logger.info(
+                    "[%s] HIGH urgency notional scaled to $%.2f to fit settled cash",
+                    decision.symbol, notional,
                 )
-            logger.info(
-                "[%s] HIGH urgency trade accessing settlement reserve "
-                "(settled=$%.2f, scaled_reserve=$%.2f)",
-                decision.symbol, settled, scaled_reserve,
-            )
+            else:
+                logger.info(
+                    "[%s] HIGH urgency trade accessing settlement reserve "
+                    "(settled=$%.2f, scaled_reserve=$%.2f)",
+                    decision.symbol, settled, scaled_reserve,
+                )
 
         can_buy, settlement_reason = self.settlement.can_buy(notional, total_cash)
         if not can_buy and is_high_urgency:
