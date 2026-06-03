@@ -141,7 +141,7 @@ def check_market_regime(alpaca_config) -> tuple:
                 timeout=8,
             )
             resp.raise_for_status()
-            bars = resp.json().get("bars", [])
+            bars = resp.json().get("bars") or []
             if len(bars) >= 200:
                 closes = _pd.Series([b["c"] for b in bars])
                 sma200 = closes.rolling(200).mean().iloc[-1]
