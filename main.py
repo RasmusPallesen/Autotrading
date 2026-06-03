@@ -99,23 +99,31 @@ from datetime import time as _dtime
 
 
 # ── Market regime filter ──────────────────────────────────────────────────────
-# Cached result: (regime_ok, reason, cached_at_unix)
-_regime_cache: tuple = (True, "not yet computed", 0.0)
+# Cached result: (regime_mode, reason, cached_at_unix)
+# regime_mode: "OK" | "DEGRADED" | "BLOCKED"
+#   OK        — full trading, no restrictions
+#   DEGRADED  — both SPY+QQQ below 200d SMA but VIX not extreme;
+#               BUYs allowed at half position size, max 5 open positions
+#   BLOCKED   — both below 200d SMA AND VIX rank > 85 (panic/crash regime);
+#               no new BUYs at all
+_regime_cache: tuple = ("OK", "not yet computed", 0.0)
 _REGIME_CACHE_TTL = 1800  # seconds — re-check every 30 minutes
 
 
 def check_market_regime(alpaca_config) -> tuple:
     """
-    Returns (regime_ok, reason_str).
-    When False, the main loop skips new BUYs but still evaluates SELLs.
+    Returns (regime_mode, reason_str).
+    regime_mode is "OK", "DEGRADED", or "BLOCKED" — see cache comment above.
 
     Checks:
-      1. SPY AND QQQ both below their 200-day SMA — blocks new longs only when
-         both broad market AND tech/AI are in downtrends. If QQQ holds up while
-         SPY dips (sector rotation into AI), buys remain open.
-      2. VIX rank (percentile of past 252 days) is below 70.
+      1. SPY AND QQQ both below their 200-day SMA — if only one is below,
+         regime is OK (sector rotation is normal; don't penalise tech BUYs
+         when SPY dips but QQQ holds).
+      2. VIX rank (percentile of past 252 days) above 85 = panic territory.
+         High VIX alone does NOT block trading — volatility creates bigger
+         moves which is good for 1-3 day momentum swings.
 
-    Both checks fail gracefully — a data error returns (True, reason) so
+    Both checks fail gracefully — a data error returns ("OK", reason) so
     trading is never blocked by a missing API response.
     """
     import requests as _req
@@ -156,11 +164,11 @@ def check_market_regime(alpaca_config) -> tuple:
     # ── 1. SPY + QQQ 200-day SMA — block only if BOTH are below ──────────────
     spy_ok, spy_detail = _sma200_check("SPY")
     qqq_ok, qqq_detail = _sma200_check("QQQ")
-    # Both below = confirmed broad+tech downtrend; either above = allow buys
+    # Either above 200d SMA = sector rotation is fine; only both below = concern
     sma_ok = spy_ok or qqq_ok
 
-    # ── 2. VIX rank (CBOE public CSV) ─────────────────────────────────────────
-    vix_ok = True
+    # ── 2. VIX rank (CBOE public CSV) — only matters when SMA is already bad ──
+    vix_rank = 0.0
     vix_detail = "VIX check unavailable"
     try:
         resp = _req.get(
@@ -178,21 +186,32 @@ def check_market_regime(alpaca_config) -> tuple:
                 vix_now = closes.iloc[-1]
                 window = closes.iloc[-252:]
                 vix_rank = (vix_now - window.min()) / (window.max() - window.min()) * 100
-                vix_ok = vix_rank <= 70
-                vix_detail = f"VIX {vix_now:.1f} rank {vix_rank:.0f}/100 ({'OK' if vix_ok else 'HIGH'})"
+                vix_detail = f"VIX {vix_now:.1f} rank {vix_rank:.0f}/100"
     except Exception as e:
         vix_detail = f"VIX check error: {e}"
         logger.debug("Regime VIX check failed: %s", e)
 
-    regime_ok = sma_ok and vix_ok
-    reason = f"{spy_detail} | {qqq_detail} | {vix_detail}"
-    if not regime_ok:
-        logger.warning("[REGIME] Unfavorable — BUYs paused. %s", reason)
+    # ── Determine regime mode ─────────────────────────────────────────────────
+    # OK       — either index above 200d SMA (normal or sector-rotation market)
+    # DEGRADED — both below 200d SMA, VIX not extreme (mild bear; trade smaller)
+    # BLOCKED  — both below 200d SMA AND VIX rank > 85 (crash/panic; no new longs)
+    if sma_ok:
+        regime_mode = "OK"
+    elif vix_rank > 85:
+        regime_mode = "BLOCKED"
     else:
-        logger.info("[REGIME] OK. %s", reason)
+        regime_mode = "DEGRADED"
 
-    _regime_cache = (regime_ok, reason, time.time())
-    return regime_ok, reason
+    reason = f"{spy_detail} | {qqq_detail} | {vix_detail}"
+    if regime_mode == "OK":
+        logger.info("[REGIME] OK. %s", reason)
+    elif regime_mode == "DEGRADED":
+        logger.warning("[REGIME] DEGRADED — BUYs at half size, max 5 positions. %s", reason)
+    else:
+        logger.warning("[REGIME] BLOCKED — BUYs paused (crash/panic). %s", reason)
+
+    _regime_cache = (regime_mode, reason, time.time())
+    return regime_mode, reason
 
 
 def is_market_open() -> bool:
@@ -553,7 +572,7 @@ def run_loop(
     clinical_cal=None,
     fast_retry_symbols: list = None,
     bar_stream: "AlpacaBarStream | None" = None,
-    regime_ok: bool = True,
+    regime_mode: str = "OK",
 ):
     logger.info("--- Agent loop tick ---")
 
@@ -839,23 +858,44 @@ def run_loop(
         # Short-term strategy wants to trade volatility around catalysts, not avoid it
         # Keep clinical catalyst caution above (FDA events are truly binary), but allow earnings trading
 
-        # ── Regime gate — block new BUYs in unfavorable macro conditions ────
-        if decision.action == "BUY" and not regime_ok:
-            logger.info(
-                "[%s] BUY blocked — unfavorable market regime (SPY/VIX filter)",
-                decision.symbol,
-            )
-            store.log_decision(
-                symbol=decision.symbol,
-                action="HOLD",
-                confidence=decision.confidence,
-                rationale=decision.rationale,
-                urgency="LOW",
-                approved=False,
-                approval_reason="Regime filter: market conditions unfavorable for new longs",
-                notional=None,
-            )
-            continue
+        # ── Regime gate — restrict new BUYs in unfavorable macro conditions ──
+        if decision.action == "BUY" and regime_mode != "OK":
+            if regime_mode == "BLOCKED":
+                logger.info(
+                    "[%s] BUY blocked — regime BLOCKED (both indices below 200d SMA + VIX panic)",
+                    decision.symbol,
+                )
+                store.log_decision(
+                    symbol=decision.symbol,
+                    action="HOLD",
+                    confidence=decision.confidence,
+                    rationale=decision.rationale,
+                    urgency="LOW",
+                    approved=False,
+                    approval_reason="Regime BLOCKED: crash/panic conditions (both SPY+QQQ below 200d SMA, VIX rank >85)",
+                    notional=None,
+                )
+                continue
+            elif regime_mode == "DEGRADED":
+                # Both indices below 200d SMA but not in panic — allow BUYs at
+                # half size with a tighter position cap (5 instead of normal max)
+                if decision.symbol not in positions_map and len(positions_map) >= 5:
+                    logger.info(
+                        "[%s] BUY skipped — regime DEGRADED, position cap (5 max in mild bear)",
+                        decision.symbol,
+                    )
+                    continue
+                import dataclasses as _dc
+                decision = _dc.replace(
+                    decision,
+                    suggested_position_pct=decision.suggested_position_pct * 0.5,
+                )
+                logger.info(
+                    "[%s] BUY in DEGRADED regime — position size halved (%.1f%% → %.1f%%)",
+                    decision.symbol,
+                    decision.suggested_position_pct * 2 * 100,
+                    decision.suggested_position_pct * 100,
+                )
 
         # ── Opportunity-cost sell ────────────────────────────────────────────
         # Runs BEFORE risk.check() so any freed cash is visible to the risk
@@ -1245,6 +1285,22 @@ def _drain_hot_queue(
                 getattr(decision, "urgency", "?"),
             )
 
+            # Apply regime filter to BUYs — read cached value (no extra API call)
+            if decision.action == "BUY":
+                _hot_regime = _regime_cache[0]
+                if _hot_regime == "BLOCKED":
+                    logger.debug("[HOT PATH] BUY %s blocked — regime BLOCKED", symbol)
+                    continue
+                elif _hot_regime == "DEGRADED":
+                    if symbol not in positions_map and len(positions_map) >= 5:
+                        logger.debug("[HOT PATH] BUY %s skipped — regime DEGRADED, position cap", symbol)
+                        continue
+                    import dataclasses as _dc
+                    decision = _dc.replace(
+                        decision,
+                        suggested_position_pct=decision.suggested_position_pct * 0.5,
+                    )
+
             # Risk check + execution (same path as normal loop)
             _atr = snapshot.atr_14 if snapshot else None
             verdict = risk.check(
@@ -1360,12 +1416,12 @@ def main():
             if now - last_sweep >= SWEEP_INTERVAL:
                 try:
                     logger.info("--- [SWEEP] Full symbol sweep ---")
-                    regime_ok, _ = check_market_regime(config.alpaca)
+                    regime_mode, _ = check_market_regime(config.alpaca)
                     high_urgency_blocked = run_loop(
                         data_fetcher, None, ai_engine, executor, risk,
                         store, research_store, massive_fetcher, earnings_cal, clinical_cal,
                         bar_stream=bar_stream,
-                        regime_ok=regime_ok,
+                        regime_mode=regime_mode,
                     )
                     last_sweep = time.time()
                     last_mini  = last_sweep  # sweep covers held positions too
@@ -1385,7 +1441,7 @@ def main():
                                     earnings_cal, clinical_cal,
                                     fast_retry_symbols=high_urgency_blocked,
                                     bar_stream=bar_stream,
-                                    regime_ok=regime_ok,
+                                    regime_mode=regime_mode,
                                 )
                             except Exception as e:
                                 logger.warning("Fast retry error: %s", e)
