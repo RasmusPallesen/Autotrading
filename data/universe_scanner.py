@@ -164,12 +164,8 @@ class UniverseScanner:
                 candidates[c.symbol] = c
         logger.info("[SCAN] Alpaca most-actives done (%d candidates so far)", len(candidates))
 
-        # Source 2: Yahoo Finance movers
-        logger.info("[SCAN] Fetching Yahoo Finance movers...")
-        for c in self._fetch_yahoo_movers():
-            if c.symbol not in candidates and self._should_include(c, existing_watchlist):
-                candidates[c.symbol] = c
-        logger.info("[SCAN] Yahoo movers done (%d candidates so far)", len(candidates))
+        # Source 2: Yahoo Finance movers — disabled (blocks indefinitely on server IPs)
+        # Alpaca most-actives + sector sympathy cover the same discovery need
 
         # Source 3: Sector sympathy
         logger.info("[SCAN] Checking sector sympathy...")
