@@ -550,8 +550,46 @@ def fetch_positions() -> list:
         return []
 
 
+_ALPACA_DATA = "https://data.alpaca.markets"
+_BENCHMARKS  = {
+    "SPY": "S&P 500",
+    "QQQ": "NASDAQ",
+    "DIA": "Dow Jones",
+}
+
 @st.cache_data(ttl=60)
-def calc_unsettled_proceeds() -> float:
+def fetch_benchmark_data() -> dict:
+    """
+    Returns {symbol: {name, price, change_pct}} for SPY, QQQ, DIA.
+    Uses Alpaca snapshot endpoint — dailyBar vs prevDailyBar gives today's % move.
+    """
+    if not ALPACA_API_KEY:
+        return {}
+    try:
+        r = requests.get(
+            f"{_ALPACA_DATA}/v2/stocks/snapshots",
+            headers={"APCA-API-KEY-ID": ALPACA_API_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET},
+            params={"symbols": ",".join(_BENCHMARKS), "feed": "iex"},
+            timeout=6,
+        )
+        r.raise_for_status()
+        data = r.json()
+        result = {}
+        for sym, label in _BENCHMARKS.items():
+            snap = data.get(sym, {})
+            daily     = snap.get("dailyBar") or {}
+            prev      = snap.get("prevDailyBar") or {}
+            price     = float(daily.get("c") or daily.get("o") or 0)
+            prev_close = float(prev.get("c", 0))
+            change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0.0
+            if price > 0:
+                result[sym] = {"name": label, "price": price, "change_pct": change_pct}
+        return result
+    except Exception:
+        return {}
+
+
+
     """Sum SELL notionals from the last 5 days whose T+2 settlement date is still in the future."""
     today = datetime.now(timezone.utc).date()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
@@ -1128,6 +1166,7 @@ st.markdown(f"""
 # ── Pre-load all data ─────────────────────────────────────────────────────────
 account    = fetch_account()
 positions  = fetch_positions()
+benchmarks = fetch_benchmark_data()
 decisions  = load_decisions()
 executions = load_executions()
 research   = load_research()
@@ -1201,6 +1240,35 @@ with tab_portfolio:
             for b in breakdown
         )
         st.caption(f"T+2 pending ${unsettled:,.2f} — {lines}")
+
+    # ── Benchmark comparison ───────────────────────────────────────
+    if benchmarks:
+        bench_cards = ""
+        for sym, b in benchmarks.items():
+            chg = b["change_pct"]
+            cls = "delta-pos" if chg >= 0 else "delta-neg"
+            arrow = "▲" if chg >= 0 else "▼"
+            bench_cards += f"""
+            <div class="metric-card">
+                <div class="metric-label">{b['name']}</div>
+                <div class="metric-value" style="font-size:18px;">${b['price']:,.2f}</div>
+                <div class="metric-delta {cls}">{arrow} {chg:+.2f}%</div>
+            </div>"""
+        # Compare portfolio day % vs benchmarks
+        if account:
+            port_vs = ""
+            for sym, b in benchmarks.items():
+                diff = day_pnl_pct - b["change_pct"]
+                sign = "+" if diff >= 0 else ""
+                port_vs += f"vs {b['name']}: <b style='color:{'#4ade80' if diff>=0 else '#f87171'}'>{sign}{diff:.2f}%</b> &nbsp;"
+            st.markdown(
+                f'<div class="metric-grid three">{bench_cards}</div>'
+                f'<div style="font-size:11px;color:#6b7280;padding:4px 2px;">'
+                f'Portfolio day {day_pnl_pct:+.2f}% — {port_vs}</div>',
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(f'<div class="metric-grid three">{bench_cards}</div>', unsafe_allow_html=True)
 
     # ── Positions P&L chart ────────────────────────────────────────
     if positions:
