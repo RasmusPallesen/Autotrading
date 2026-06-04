@@ -1248,13 +1248,13 @@ with tab_portfolio:
         bench_cards = ""
         for sym, b in benchmarks.items():
             chg = b["change_pct"]
-            cls = "delta-pos" if chg >= 0 else "delta-neg"
+            colour = "#4ade80" if chg >= 0 else "#f87171"
             arrow = "▲" if chg >= 0 else "▼"
             bench_cards += f"""
             <div class="metric-card">
                 <div class="metric-label">{b['name']}</div>
-                <div class="metric-value" style="font-size:18px;">${b['price']:,.2f}</div>
-                <div class="metric-delta {cls}">{arrow} {chg:+.2f}%</div>
+                <div class="metric-value" style="font-size:22px;color:{colour};">{arrow} {chg:+.2f}%</div>
+                <div style="font-size:10px;color:#6b7280;">{sym} ${b['price']:,.2f}</div>
             </div>"""
         # Compare portfolio day % vs benchmarks
         if account:
