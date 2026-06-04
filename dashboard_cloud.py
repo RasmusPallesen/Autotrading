@@ -590,6 +590,8 @@ def fetch_benchmark_data() -> dict:
 
 
 
+@st.cache_data(ttl=60)
+def calc_unsettled_proceeds() -> float:
     """Sum SELL notionals from the last 5 days whose T+2 settlement date is still in the future."""
     today = datetime.now(timezone.utc).date()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
