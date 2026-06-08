@@ -327,6 +327,7 @@ def execute_opportunity_sell(
     store: TradeStore,
     data_fetcher: AlpacaDataFetcher,
     earnings_events: dict = None,
+    locked_symbols: frozenset = frozenset(),
 ) -> tuple:
     """
     If at max positions and a new BUY signal arrives for an unheld symbol,
@@ -344,7 +345,11 @@ def execute_opportunity_sell(
     if current_count < config.risk.max_open_positions or symbol_held:
         return positions, positions_map
 
-    weakest = find_weakest_position(positions, positions_map, research_signals)
+    sellable = [p for p in positions if p["symbol"] not in locked_symbols]
+    if not sellable:
+        return positions, positions_map
+    sellable_map = {p["symbol"]: p for p in sellable}
+    weakest = find_weakest_position(sellable, sellable_map, research_signals)
     if not weakest:
         return positions, positions_map
 
@@ -590,6 +595,16 @@ def run_loop(
     )
 
     positions_map = {p["symbol"]: p for p in positions}
+
+    # Load per-position locks — symbols the user has locked via the dashboard
+    locked_symbols: set = set()
+    try:
+        if store:
+            locked_symbols = store.get_locked_symbols()
+            if locked_symbols:
+                logger.debug("Locked symbols (sell blocked): %s", sorted(locked_symbols))
+    except Exception:
+        pass
 
     # 2. Build dynamic symbol list from full research universe
     # In fast retry mode, only evaluate the blocked HIGH urgency symbols
@@ -913,6 +928,7 @@ def run_loop(
                 store=store,
                 data_fetcher=data_fetcher,
                 earnings_events=earnings_events,
+                locked_symbols=frozenset(locked_symbols),
             )
 
         # ── Risk verdict (always sees post-sell portfolio state) ─────────────
@@ -998,6 +1014,10 @@ def run_loop(
         elif decision.action == "SELL":
             existing = positions_map.get(decision.symbol)
             if existing:
+                # Lock guard: user has locked this position from the dashboard
+                if decision.symbol in locked_symbols:
+                    logger.info("[%s] SELL skipped — locked by user", decision.symbol)
+                    continue
                 # PDT guard: don't sell a position opened today
                 if store and store.bought_today(decision.symbol):
                     logger.info(
@@ -1068,6 +1088,7 @@ def run_mini_loop(
     store: TradeStore,
     research_store,
     earnings_cal,
+    locked_symbols: frozenset = frozenset(),
 ) -> None:
     """
     Lightweight 1-minute evaluation of held positions only.
@@ -1169,6 +1190,9 @@ def run_mini_loop(
 
         price = data_fetcher.get_latest_price(symbol)
         if decision.action == "SELL" and symbol in positions_map:
+            if symbol in locked_symbols:
+                logger.info("[%s] [MINI] SELL skipped — locked by user", symbol)
+                continue
             result = executor.sell(symbol, close_all=True)
             store.log_execution(symbol, "SELL", float(positions_map[symbol]["market_value"]), price, None, None)
             logger.info("[MINI] SELL %s executed: %s", symbol, result)
@@ -1188,6 +1212,7 @@ def _drain_hot_queue(
     store: TradeStore,
     research_store,
     earnings_cal,
+    locked_symbols: frozenset = frozenset(),
 ) -> None:
     """
     Process any hot-symbol events that arrived since the last tick.
@@ -1324,9 +1349,12 @@ def _drain_hot_queue(
                     store.log_execution(symbol, "BUY", verdict.adjusted_notional, price, stop, target)
                     logger.info("[HOT PATH] BUY %s executed: %s", symbol, result)
                 elif decision.action == "SELL" and symbol in positions_map:
-                    result = executor.sell(symbol, close_all=True)
-                    store.log_execution(symbol, "SELL", float(positions_map[symbol]["market_value"]), price, None, None)
-                    logger.info("[HOT PATH] SELL %s executed: %s", symbol, result)
+                    if symbol in locked_symbols:
+                        logger.info("[%s] [HOT PATH] SELL skipped — locked by user", symbol)
+                    else:
+                        result = executor.sell(symbol, close_all=True)
+                        store.log_execution(symbol, "SELL", float(positions_map[symbol]["market_value"]), price, None, None)
+                        logger.info("[HOT PATH] SELL %s executed: %s", symbol, result)
             else:
                 logger.info("[HOT PATH] %s %s blocked: %s", symbol, decision.action, verdict.reason)
 
@@ -1467,9 +1495,16 @@ def main():
                         )
                     positions = data_fetcher.get_positions()
                     held = [p["symbol"] for p in positions]
+                    _mini_locked: set = set()
+                    try:
+                        if store:
+                            _mini_locked = store.get_locked_symbols()
+                    except Exception:
+                        pass
                     run_mini_loop(
                         held, bar_stream, data_fetcher, ai_engine,
                         executor, risk, store, research_store, earnings_cal,
+                        locked_symbols=frozenset(_mini_locked),
                     )
                     last_mini = time.time()
                 except Exception as e:
@@ -1477,9 +1512,16 @@ def main():
 
             # ── Hot queue drain (every 5 seconds) ──────────────────────────────
             if bar_stream:
+                _hot_locked: set = set()
+                try:
+                    if store:
+                        _hot_locked = store.get_locked_symbols()
+                except Exception:
+                    pass
                 _drain_hot_queue(
                     bar_stream, data_fetcher, ai_engine, executor, risk,
                     store, research_store, earnings_cal,
+                    locked_symbols=frozenset(_hot_locked),
                 )
 
         else:

@@ -102,6 +102,10 @@ class TradeStore:
                     cost_usd              REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS api_usage_ts ON api_usage(ts);
+                CREATE TABLE IF NOT EXISTS symbol_locks (
+                    symbol      TEXT PRIMARY KEY,
+                    locked_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
             """)
 
     def _create_tables_sqlite(self):
@@ -142,6 +146,10 @@ class TradeStore:
                 cost_usd              REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS api_usage_ts ON api_usage(ts);
+            CREATE TABLE IF NOT EXISTS symbol_locks (
+                symbol      TEXT PRIMARY KEY,
+                locked_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            );
         """)
         self.conn.commit()
 
@@ -191,6 +199,19 @@ class TradeStore:
             "VALUES (%s,%s,%s,%s,%s,%s,%s)",
             (agent, model, inp, out, cw, cr, cost),
         )
+
+    def lock_symbol(self, symbol: str) -> None:
+        self._execute(
+            "INSERT INTO symbol_locks (symbol) VALUES (%s) ON CONFLICT (symbol) DO NOTHING",
+            (symbol,),
+        )
+
+    def unlock_symbol(self, symbol: str) -> None:
+        self._execute("DELETE FROM symbol_locks WHERE symbol = %s", (symbol,))
+
+    def get_locked_symbols(self) -> set:
+        rows = self._fetchall("SELECT symbol FROM symbol_locks", ())
+        return {r["symbol"] for r in rows}
 
     def _execute(self, sql: str, params: tuple):
         try:
