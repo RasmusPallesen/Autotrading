@@ -29,6 +29,7 @@ class RiskManager:
 
     def __init__(self, config):
         self.max_position_pct = config.max_position_pct
+        self.high_conviction_position_pct = getattr(config, 'high_conviction_position_pct', 0.15)
         self.stop_loss_pct = config.stop_loss_pct
         self.take_profit_pct = config.take_profit_pct
         self.max_daily_drawdown_pct = config.max_daily_drawdown_pct
@@ -106,14 +107,22 @@ class RiskManager:
                 f"Max open positions ({self.max_open_positions}) reached.",
             )
 
+        # Effective position cap: high-conviction signals (confidence ≥ 0.80) get a
+        # larger cap so an existing position near the standard limit doesn't permanently
+        # freeze the symbol. Routine add-ons remain bounded by max_position_pct.
+        is_high_conviction = decision.confidence >= 0.80
+        effective_cap_pct = (
+            self.high_conviction_position_pct if is_high_conviction else self.max_position_pct
+        )
+
         # Position size — volatility-adaptive when ATR + price are available
-        requested_pct = min(decision.suggested_position_pct, self.max_position_pct)
+        requested_pct = min(decision.suggested_position_pct, effective_cap_pct)
         if atr and atr > 0 and current_price and current_price > 0:
             # Risk 1% of equity per trade, sized so the ATR×2 stop costs exactly that
             dollar_risk = equity * 0.01
             shares = dollar_risk / (atr * 2.0)
             notional = shares * current_price
-            notional = min(notional, equity * self.max_position_pct)  # cap at max position
+            notional = min(notional, equity * effective_cap_pct)  # cap at effective position limit
             logger.debug(
                 "[%s] ATR sizing: equity=%.2f atr=%.4f shares=%.2f notional=%.2f",
                 decision.symbol, equity, atr, shares, notional,
@@ -121,23 +130,26 @@ class RiskManager:
         else:
             notional = equity * requested_pct
 
-        # Aggregate position cap — existing + new must not exceed max_position_pct
+        # Aggregate position cap — existing + new must not exceed the effective cap
         existing_position = next((p for p in positions if p["symbol"] == decision.symbol), None)
         existing_notional = float(existing_position.get("market_value", 0)) if existing_position else 0.0
         if existing_notional > 0:
-            max_symbol_notional = equity * self.max_position_pct
+            max_symbol_notional = equity * effective_cap_pct
             headroom = max(0.0, max_symbol_notional - existing_notional)
             if headroom <= 0:
                 return RiskVerdict(
                     False,
                     f"Position already at max allocation "
-                    f"(existing=${existing_notional:,.2f}, cap=${max_symbol_notional:,.2f}). "
-                    f"No headroom for add-on.",
+                    f"(existing=${existing_notional:,.2f}, cap=${max_symbol_notional:,.2f} "
+                    f"@ {effective_cap_pct:.0%}). No headroom for add-on.",
                 )
             notional = min(notional, headroom)
             logger.info(
-                "[%s] Add-on BUY: existing=$%.2f headroom=$%.2f new_notional=$%.2f",
+                "[%s] Add-on BUY: existing=$%.2f headroom=$%.2f new_notional=$%.2f "
+                "(cap=%.0f%%%s)",
                 decision.symbol, existing_notional, headroom, notional,
+                effective_cap_pct * 100,
+                " HIGH-CONVICTION" if is_high_conviction else "",
             )
 
         # Early exit: if notional is already below minimum before any adjustments,

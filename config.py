@@ -41,6 +41,7 @@ class AnthropicConfig:
 @dataclass
 class RiskConfig:
     max_position_pct: float = 0.10
+    high_conviction_position_pct: float = 0.15  # cap for confidence ≥ 0.80 signals
     stop_loss_pct: float = 0.05
     take_profit_pct: float = 0.15
     max_daily_drawdown_pct: float = 0.04
