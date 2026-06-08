@@ -1194,12 +1194,24 @@ def run_mini_loop(
                 logger.info("[%s] [MINI] SELL skipped — locked by user", symbol)
                 continue
             result = executor.sell(symbol, close_all=True)
-            store.log_execution(symbol, "SELL", float(positions_map[symbol]["market_value"]), price, None, None)
+            store.log_execution(
+                order_id=result.get("order_id", "") if isinstance(result, dict) else "",
+                symbol=symbol,
+                side="SELL",
+                notional=float(positions_map[symbol]["market_value"]),
+            )
             logger.info("[MINI] SELL %s executed: %s", symbol, result)
         elif decision.action == "BUY" and symbol not in positions_map:
             stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
             result = executor.buy(symbol, verdict.adjusted_notional, stop, target)
-            store.log_execution(symbol, "BUY", verdict.adjusted_notional, price, stop, target)
+            store.log_execution(
+                order_id=result.get("order_id", "") if isinstance(result, dict) else "",
+                symbol=symbol,
+                side="BUY",
+                notional=verdict.adjusted_notional,
+                stop_loss=stop,
+                take_profit=target,
+            )
             logger.info("[MINI] BUY %s executed: %s", symbol, result)
 
 
@@ -1346,14 +1358,26 @@ def _drain_hot_queue(
                 if decision.action == "BUY" and symbol not in positions_map:
                     stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
                     result = executor.buy(symbol, verdict.adjusted_notional, stop, target)
-                    store.log_execution(symbol, "BUY", verdict.adjusted_notional, price, stop, target)
+                    store.log_execution(
+                        order_id=result.get("order_id", "") if isinstance(result, dict) else "",
+                        symbol=symbol,
+                        side="BUY",
+                        notional=verdict.adjusted_notional,
+                        stop_loss=stop,
+                        take_profit=target,
+                    )
                     logger.info("[HOT PATH] BUY %s executed: %s", symbol, result)
                 elif decision.action == "SELL" and symbol in positions_map:
                     if symbol in locked_symbols:
                         logger.info("[%s] [HOT PATH] SELL skipped — locked by user", symbol)
                     else:
                         result = executor.sell(symbol, close_all=True)
-                        store.log_execution(symbol, "SELL", float(positions_map[symbol]["market_value"]), price, None, None)
+                        store.log_execution(
+                            order_id=result.get("order_id", "") if isinstance(result, dict) else "",
+                            symbol=symbol,
+                            side="SELL",
+                            notional=float(positions_map[symbol]["market_value"]),
+                        )
                         logger.info("[HOT PATH] SELL %s executed: %s", symbol, result)
             else:
                 logger.info("[HOT PATH] %s %s blocked: %s", symbol, decision.action, verdict.reason)
