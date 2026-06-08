@@ -730,6 +730,28 @@ def load_api_cost_month() -> float:
     return float(df.iloc[0]["cost"])
 
 
+# ── Position locks ─────────────────────────────────────────────────────────────
+@st.cache_data(ttl=5)
+def load_locked_symbols() -> set:
+    df = query("SELECT symbol FROM symbol_locks", silent=True)
+    return set(df["symbol"].tolist()) if not df.empty else set()
+
+
+@st.cache_resource
+def get_lock_store():
+    from storage.trade_store import TradeStore
+    return TradeStore()
+
+
+def _toggle_lock(symbol: str, lock: bool) -> None:
+    s = get_lock_store()
+    if lock:
+        s.lock_symbol(symbol)
+    else:
+        s.unlock_symbol(symbol)
+    load_locked_symbols.clear()
+
+
 # ── Data loaders ───────────────────────────────────────────────────────────────
 def load_decisions() -> pd.DataFrame:
     df = query("SELECT * FROM decisions ORDER BY id DESC LIMIT 200")
@@ -1366,6 +1388,7 @@ with tab_portfolio:
     if positions:
         positions_sorted = sorted(positions,
             key=lambda p: float(p.get("unrealized_plpc", 0)), reverse=True)
+        locked_symbols = load_locked_symbols()
 
         # Sell result banner
         if st.session_state.sell_result:
@@ -1427,10 +1450,25 @@ with tab_portfolio:
             if spark:
                 render_chart(chart_sparkline(spark, entry))
 
-            # Sell controls — small, right-aligned
-            _gap, _btn = st.columns([3, 1])
-            if st.session_state.confirm_sell == sym:
-                if _gap.button("✓ Confirm", key=f"confirm_{sym}", use_container_width=True):
+            # Lock toggle + sell controls
+            is_locked = sym in locked_symbols
+            _lock_col, _sell_col = st.columns([1, 3])
+
+            lock_label = "🔒" if is_locked else "🔓"
+            lock_help = "Locked — agent cannot sell. Tap to unlock." if is_locked else "Tap to lock (prevents agent sells)"
+            if _lock_col.button(lock_label, key=f"lock_{sym}", use_container_width=True, help=lock_help):
+                _toggle_lock(sym, not is_locked)
+                st.rerun()
+
+            if is_locked:
+                _sell_col.markdown(
+                    '<div style="font-size:11px;color:#6b7280;padding:8px 0;text-align:center;">'
+                    'Agent sells blocked</div>',
+                    unsafe_allow_html=True,
+                )
+            elif st.session_state.confirm_sell == sym:
+                c1, c2 = _sell_col.columns(2)
+                if c1.button("✓ Confirm", key=f"confirm_{sym}", use_container_width=True):
                     try:
                         result = _alpaca_close_position(sym)
                         if result.get("skipped") == "already_pending":
@@ -1443,11 +1481,11 @@ with tab_portfolio:
                         st.session_state.sell_result = (sym, f"Error: {e}")
                     st.session_state.confirm_sell = None
                     st.rerun()
-                if _btn.button("✕", key=f"cancel_{sym}", use_container_width=True):
+                if c2.button("✕", key=f"cancel_{sym}", use_container_width=True):
                     st.session_state.confirm_sell = None
                     st.rerun()
             else:
-                if _btn.button("Close", key=f"sell_{sym}", use_container_width=True):
+                if _sell_col.button("Close", key=f"sell_{sym}", use_container_width=True):
                     st.session_state.confirm_sell = sym
                     st.rerun()
 
