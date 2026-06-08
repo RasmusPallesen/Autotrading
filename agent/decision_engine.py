@@ -187,10 +187,11 @@ class TradeDecision:
 class AIDecisionEngine:
     """Uses Claude to make trade decisions based on technical signal snapshots."""
 
-    def __init__(self, config, risk_config=None):
+    def __init__(self, config, risk_config=None, trade_store=None):
         self.client = anthropic.Anthropic(api_key=config.api_key)
         self.model = config.model
         self.max_tokens = config.max_tokens
+        self._trade_store = trade_store
         # Build system prompt from live risk config so values stay in sync with config.py
         if risk_config is None:
             import config as _cfg
@@ -220,6 +221,11 @@ class AIDecisionEngine:
                 messages=[{"role": "user", "content": user_prompt}],
             )
             raw = response.content[0].text.strip()
+            if self._trade_store:
+                try:
+                    self._trade_store.log_api_usage("trading", self.model, response.usage)
+                except Exception:
+                    pass
             decision = self._parse_response(raw, snapshot.symbol)
 
             # Apply sector bias boost for preferred sectors

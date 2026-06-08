@@ -90,6 +90,18 @@ class TradeStore:
                     take_profit REAL,
                     extra_json TEXT
                 );
+                CREATE TABLE IF NOT EXISTS api_usage (
+                    id                    SERIAL PRIMARY KEY,
+                    ts                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    agent                 TEXT NOT NULL,
+                    model                 TEXT NOT NULL,
+                    input_tokens          INTEGER DEFAULT 0,
+                    output_tokens         INTEGER DEFAULT 0,
+                    cache_creation_tokens INTEGER DEFAULT 0,
+                    cache_read_tokens     INTEGER DEFAULT 0,
+                    cost_usd              REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS api_usage_ts ON api_usage(ts);
             """)
 
     def _create_tables_sqlite(self):
@@ -118,6 +130,18 @@ class TradeStore:
                 take_profit REAL,
                 extra_json TEXT
             );
+            CREATE TABLE IF NOT EXISTS api_usage (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts                    TEXT NOT NULL DEFAULT (datetime('now')),
+                agent                 TEXT NOT NULL,
+                model                 TEXT NOT NULL,
+                input_tokens          INTEGER DEFAULT 0,
+                output_tokens         INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                cache_read_tokens     INTEGER DEFAULT 0,
+                cost_usd              REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS api_usage_ts ON api_usage(ts);
         """)
         self.conn.commit()
 
@@ -142,6 +166,31 @@ class TradeStore:
                   stop_loss, take_profit, extra_json)
                  VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
         self._execute(sql, params)
+
+    _PRICING = {
+        "claude-haiku-4-5-20251001": {
+            "input":       0.80 / 1_000_000,
+            "output":      4.00 / 1_000_000,
+            "cache_write": 1.00 / 1_000_000,
+            "cache_read":  0.08 / 1_000_000,
+        },
+        # Add new models here as needed
+    }
+
+    def log_api_usage(self, agent: str, model: str, usage) -> None:
+        """Log token usage from an Anthropic API response.usage object."""
+        p = self._PRICING.get(model, self._PRICING["claude-haiku-4-5-20251001"])
+        inp = getattr(usage, "input_tokens", 0) or 0
+        out = getattr(usage, "output_tokens", 0) or 0
+        cw  = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        cr  = getattr(usage, "cache_read_input_tokens", 0) or 0
+        cost = inp * p["input"] + out * p["output"] + cw * p["cache_write"] + cr * p["cache_read"]
+        self._execute(
+            "INSERT INTO api_usage (agent, model, input_tokens, output_tokens, "
+            "cache_creation_tokens, cache_read_tokens, cost_usd) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (agent, model, inp, out, cw, cr, cost),
+        )
 
     def _execute(self, sql: str, params: tuple):
         try:

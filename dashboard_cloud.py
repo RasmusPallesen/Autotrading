@@ -644,6 +644,85 @@ def get_settlement_breakdown() -> list:
         return []
 
 
+# ── API cost loaders ───────────────────────────────────────────────────────────
+def load_api_costs_daily() -> pd.DataFrame:
+    df = query("""
+        SELECT
+            DATE(ts AT TIME ZONE 'Europe/Copenhagen') AS day,
+            agent,
+            SUM(cost_usd) AS cost,
+            SUM(input_tokens) AS inp,
+            SUM(output_tokens) AS out,
+            SUM(cache_creation_tokens) AS cw,
+            SUM(cache_read_tokens) AS cr,
+            COUNT(*) AS calls
+        FROM api_usage
+        GROUP BY day, agent
+        ORDER BY day DESC
+        LIMIT 60
+    """)
+    if not df.empty:
+        df["day"] = pd.to_datetime(df["day"])
+    return df
+
+
+def load_api_costs_totals() -> pd.DataFrame:
+    return query("""
+        SELECT
+            agent,
+            SUM(cost_usd)                                              AS total_cost,
+            SUM(input_tokens + output_tokens
+                + cache_creation_tokens + cache_read_tokens)          AS total_tokens,
+            COUNT(*)                                                   AS total_calls,
+            SUM(input_tokens)                                          AS total_inp,
+            SUM(output_tokens)                                         AS total_out,
+            SUM(cache_creation_tokens)                                 AS total_cw,
+            SUM(cache_read_tokens)                                     AS total_cr
+        FROM api_usage
+        GROUP BY agent
+    """)
+
+
+def load_api_costs_recent(days: int = 7) -> dict:
+    """Returns summary dict for the last N days (scalar values for KPIs)."""
+    df = query("""
+        SELECT
+            SUM(cost_usd)              AS cost,
+            SUM(input_tokens)          AS inp,
+            SUM(cache_creation_tokens) AS cw,
+            SUM(cache_read_tokens)     AS cr,
+            COUNT(*)                   AS calls
+        FROM api_usage
+        WHERE ts >= NOW() - INTERVAL '7 days'
+    """)
+    if df.empty:
+        return {"cost": 0.0, "inp": 0, "cw": 0, "cr": 0, "calls": 0}
+    row = df.iloc[0]
+    return {k: (row[k] or 0) for k in ("cost", "inp", "cw", "cr", "calls")}
+
+
+def load_api_cost_today() -> float:
+    df = query("""
+        SELECT SUM(cost_usd) AS cost
+        FROM api_usage
+        WHERE DATE(ts AT TIME ZONE 'Europe/Copenhagen') = CURRENT_DATE
+    """)
+    if df.empty or df.iloc[0]["cost"] is None:
+        return 0.0
+    return float(df.iloc[0]["cost"])
+
+
+def load_api_cost_month() -> float:
+    df = query("""
+        SELECT SUM(cost_usd) AS cost
+        FROM api_usage
+        WHERE DATE_TRUNC('month', ts) = DATE_TRUNC('month', NOW())
+    """)
+    if df.empty or df.iloc[0]["cost"] is None:
+        return 0.0
+    return float(df.iloc[0]["cost"])
+
+
 # ── Data loaders ───────────────────────────────────────────────────────────────
 def load_decisions() -> pd.DataFrame:
     df = query("SELECT * FROM decisions ORDER BY id DESC LIMIT 200")
@@ -1194,7 +1273,7 @@ if account:
     breakdown    = get_settlement_breakdown()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_portfolio, tab_signals = st.tabs(["Portfolio", "Signals"])
+tab_portfolio, tab_signals, tab_costs = st.tabs(["Portfolio", "Signals", "Costs"])
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1626,6 +1705,87 @@ if _rc3.button("Reconnect", use_container_width=True):
     st.cache_resource.clear()
     st.rerun()
 
+
+# ── Costs tab ─────────────────────────────────────────────────────────────────
+with tab_costs:
+    daily_df   = load_api_costs_daily()
+    totals_df  = load_api_costs_totals()
+    recent     = load_api_costs_recent(7)
+    cost_today = load_api_cost_today()
+    cost_month = load_api_cost_month()
+
+    total_all = float(totals_df["total_cost"].sum()) if not totals_df.empty else 0.0
+    cache_hit_rate = 0.0
+    if recent["inp"] + recent["cw"] + recent["cr"] > 0:
+        cache_hit_rate = recent["cr"] / (recent["inp"] + recent["cw"] + recent["cr"]) * 100
+
+    st.markdown('<div class="section-header">Claude API Costs</div>', unsafe_allow_html=True)
+
+    # KPI row
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total Spend", f"${total_all:.4f}")
+    k2.metric("Today", f"${cost_today:.4f}")
+    k3.metric("This Month", f"${cost_month:.4f}")
+    k4.metric("Cache Hit Rate (7d)", f"{cache_hit_rate:.1f}%")
+
+    if daily_df.empty:
+        st.info("No API usage data yet — data appears here after the first trading cycle.")
+    else:
+        # Daily stacked bar chart
+        fig_daily = go.Figure()
+        colours = {"trading": "#3b82f6", "research": "#22c55e"}
+        for agent_name, colour in colours.items():
+            sub = daily_df[daily_df["agent"] == agent_name].sort_values("day")
+            if not sub.empty:
+                fig_daily.add_trace(go.Bar(
+                    x=sub["day"], y=sub["cost"],
+                    name=agent_name.title(),
+                    marker_color=colour,
+                    hovertemplate="<b>%{x}</b><br>$%{y:.5f}<extra>" + agent_name.title() + "</extra>",
+                ))
+        fig_daily.update_layout(
+            barmode="stack",
+            title="Daily Claude API Spend",
+            yaxis=dict(tickprefix="$", tickformat=".5f", title="Cost (USD)"),
+            xaxis=dict(title=""),
+            height=280,
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=0, r=0, t=32, b=0),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        )
+        st.plotly_chart(fig_daily, use_container_width=True, config={"displayModeBar": False})
+
+        # Cache effectiveness
+        savings_usd = recent["cr"] * (0.80 - 0.08) / 1_000_000
+        daily_rate = cost_today
+        monthly_proj = daily_rate * 22  # ~22 trading days
+        ce1, ce2, ce3 = st.columns(3)
+        ce1.metric("Cache Reads (7d)", f"{recent['cr']:,} tok", help="Tokens served from cache — cost 10× less than regular input")
+        ce2.metric("Savings from Cache (7d)", f"${savings_usd:.4f}", help="vs. paying full input price for those tokens")
+        ce3.metric("Projected Monthly", f"${monthly_proj:.2f}", help="Today's spend × 22 trading days")
+
+        # Per-agent breakdown table
+        if not totals_df.empty:
+            st.markdown("**7-day breakdown by agent**")
+            week_df = query("""
+                SELECT agent,
+                    COUNT(*)                   AS calls,
+                    SUM(input_tokens)          AS inp_tok,
+                    SUM(output_tokens)         AS out_tok,
+                    SUM(cache_creation_tokens) AS cache_write_tok,
+                    SUM(cache_read_tokens)     AS cache_read_tok,
+                    SUM(cost_usd)              AS cost
+                FROM api_usage
+                WHERE ts >= NOW() - INTERVAL '7 days'
+                GROUP BY agent
+                ORDER BY cost DESC
+            """)
+            if not week_df.empty:
+                week_df["cost"] = week_df["cost"].apply(lambda x: f"${x:.4f}")
+                week_df.columns = ["Agent", "Calls", "Input tok", "Output tok", "Cache write tok", "Cache read tok", "Cost"]
+                st.dataframe(week_df, use_container_width=True, hide_index=True)
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.markdown(f"""

@@ -27,6 +27,7 @@ from collector import fetch_news, fetch_sec_filings, fetch_reddit
 from analyst import ResearchAnalyst
 from emailer import send_alert
 from storage.research_store import ResearchStore
+from storage.trade_store import TradeStore
 from data.market_scanner import MarketScanner
 from data.earnings_calendar import EarningsCalendar
 from data.insider_monitor import InsiderMonitor
@@ -789,7 +790,8 @@ def main():
         os.getenv("ANALYSIS_CACHE_TTL_HOURS", "4"),
     )
 
-    analyst               = ResearchAnalyst(config.anthropic)
+    trade_store           = TradeStore()
+    analyst               = ResearchAnalyst(config.anthropic, trade_store=trade_store)
     store                 = ResearchStore()
     breakout_screener     = BreakoutScreener()
     institutional_monitor = InstitutionalMonitor()
