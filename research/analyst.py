@@ -224,9 +224,10 @@ class ResearchReport:
 
 class ResearchAnalyst:
 
-    def __init__(self, config):
+    def __init__(self, config, trade_store=None):
         self.client = anthropic.Anthropic(api_key=config.api_key)
         self.model = config.model
+        self._trade_store = trade_store
 
     def analyse(self, symbol: str, items, force_fresh: bool = False) -> ResearchReport:
         global _CACHE, _CACHE_LOADED
@@ -314,6 +315,11 @@ class ResearchAnalyst:
                 messages=[{"role": "user", "content": user_prompt}],
             )
             raw = response.content[0].text.strip()
+            if self._trade_store:
+                try:
+                    self._trade_store.log_api_usage("research", self.model, response.usage)
+                except Exception:
+                    pass
             clean = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             data = json.loads(clean)
 

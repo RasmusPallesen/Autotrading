@@ -1349,10 +1349,10 @@ def main():
     massive_fetcher = MassiveIndicatorFetcher()
     earnings_cal    = EarningsCalendar()
     clinical_cal    = ClinicalCatalystCalendar()
-    ai_engine       = AIDecisionEngine(config.anthropic)
+    store           = TradeStore()
+    ai_engine       = AIDecisionEngine(config.anthropic, trade_store=store)
     executor        = AlpacaExecutor(config.alpaca)
     risk            = RiskManager(config.risk)
-    store           = TradeStore()
     research_store  = ResearchStore()
 
     # Live bar stream (WebSocket) — pre-populates bar buffers so the trading
