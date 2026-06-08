@@ -1244,11 +1244,18 @@ def _drain_hot_queue(
 
             # Skip Claude for unowned symbols on bearish bars — we only want BUY
             # signals for new entries; a SELL rec on an unowned stock is worthless.
+            # Exception: if the triggering bar itself is a strong green candle (≥+0.5%
+            # close vs open), call Claude regardless of the 1h rolling context. This
+            # catches momentum waves that just started — the 1h change is still negative
+            # but the breakout bar is the signal.
             _chg = snapshot.price_change_pct_1h
-            if symbol not in positions_map and (_chg is None or _chg < 0):
+            _bar_chg = (bar_dict["close"] - bar_dict["open"]) / bar_dict["open"] * 100
+            _is_bullish_bar = _bar_chg >= 0.5
+            _bearish_context = (_chg is None or _chg < 0) and not _is_bullish_bar
+            if symbol not in positions_map and _bearish_context:
                 logger.debug(
-                    "[HOT PATH] %s not held + bearish/flat (1h chg=%s) — skipping Claude",
-                    symbol, f"{_chg:.2f}%" if _chg is not None else "N/A",
+                    "[HOT PATH] %s not held + bearish context (1h=%s bar=%+.2f%%) — skipping Claude",
+                    symbol, f"{_chg:.2f}%" if _chg is not None else "N/A", _bar_chg,
                 )
                 continue
 
