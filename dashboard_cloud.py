@@ -507,7 +507,7 @@ def _alpaca_close_position(symbol: str) -> dict:
     raise RuntimeError(f"Alpaca {r.status_code}: {msg}")
 
 
-def query(sql: str, params=()) -> pd.DataFrame:
+def query(sql: str, params=(), silent: bool = False) -> pd.DataFrame:
     backend, conn = get_conn()
     if conn is None:
         return pd.DataFrame()
@@ -517,7 +517,12 @@ def query(sql: str, params=()) -> pd.DataFrame:
             cols = [d[0] for d in cur.description]
             return pd.DataFrame(cur.fetchall(), columns=cols)
     except Exception as e:
-        st.error(f"Query: {e}")
+        try:
+            conn.rollback()  # clear aborted-transaction state so subsequent queries work
+        except Exception:
+            pass
+        if not silent:
+            st.error(f"Query: {e}")
         return pd.DataFrame()
 
 
@@ -645,6 +650,8 @@ def get_settlement_breakdown() -> list:
 
 
 # ── API cost loaders ───────────────────────────────────────────────────────────
+# All cost queries use silent=True so a missing api_usage table (before the first
+# agent restart) returns an empty DataFrame without polluting the dashboard with errors.
 def load_api_costs_daily() -> pd.DataFrame:
     df = query("""
         SELECT
@@ -660,7 +667,7 @@ def load_api_costs_daily() -> pd.DataFrame:
         GROUP BY day, agent
         ORDER BY day DESC
         LIMIT 60
-    """)
+    """, silent=True)
     if not df.empty:
         df["day"] = pd.to_datetime(df["day"])
     return df
@@ -680,7 +687,7 @@ def load_api_costs_totals() -> pd.DataFrame:
             SUM(cache_read_tokens)                                     AS total_cr
         FROM api_usage
         GROUP BY agent
-    """)
+    """, silent=True)
 
 
 def load_api_costs_recent(days: int = 7) -> dict:
@@ -694,7 +701,7 @@ def load_api_costs_recent(days: int = 7) -> dict:
             COUNT(*)                   AS calls
         FROM api_usage
         WHERE ts >= NOW() - INTERVAL '7 days'
-    """)
+    """, silent=True)
     if df.empty:
         return {"cost": 0.0, "inp": 0, "cw": 0, "cr": 0, "calls": 0}
     row = df.iloc[0]
@@ -706,7 +713,7 @@ def load_api_cost_today() -> float:
         SELECT SUM(cost_usd) AS cost
         FROM api_usage
         WHERE DATE(ts AT TIME ZONE 'Europe/Copenhagen') = CURRENT_DATE
-    """)
+    """, silent=True)
     if df.empty or df.iloc[0]["cost"] is None:
         return 0.0
     return float(df.iloc[0]["cost"])
@@ -717,7 +724,7 @@ def load_api_cost_month() -> float:
         SELECT SUM(cost_usd) AS cost
         FROM api_usage
         WHERE DATE_TRUNC('month', ts) = DATE_TRUNC('month', NOW())
-    """)
+    """, silent=True)
     if df.empty or df.iloc[0]["cost"] is None:
         return 0.0
     return float(df.iloc[0]["cost"])
@@ -1781,7 +1788,7 @@ with tab_costs:
                 WHERE ts >= NOW() - INTERVAL '7 days'
                 GROUP BY agent
                 ORDER BY cost DESC
-            """)
+            """, silent=True)
             if not week_df.empty:
                 week_df["cost"] = week_df["cost"].apply(lambda x: f"${x:.4f}")
                 week_df.columns = ["Agent", "Calls", "Input tok", "Output tok", "Cache write tok", "Cache read tok", "Cost"]
