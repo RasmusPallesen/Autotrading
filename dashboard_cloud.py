@@ -58,6 +58,7 @@ st.markdown("""
         margin-bottom: 16px;
     }
     .metric-grid.three { grid-template-columns: repeat(3, 1fr); }
+    .metric-grid.four  { grid-template-columns: repeat(4, 1fr); }
 
     .metric-card {
         background: #0d1117;
@@ -1768,7 +1769,7 @@ with tab_costs:
 
     # KPI row
     st.markdown(f"""
-    <div class="metric-row">
+    <div class="metric-grid four">
         <div class="metric-card">
             <div class="metric-label">Total Spend</div>
             <div class="metric-value">${total_all:.4f}</div>
@@ -1821,7 +1822,7 @@ with tab_costs:
         daily_rate = cost_today
         monthly_proj = daily_rate * 22  # ~22 trading days
         st.markdown(f"""
-        <div class="metric-row">
+        <div class="metric-grid three">
             <div class="metric-card">
                 <div class="metric-label">Cache Reads (7d)</div>
                 <div class="metric-value">{recent['cr']:,} tok</div>
