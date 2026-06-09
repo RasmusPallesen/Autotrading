@@ -1767,11 +1767,25 @@ with tab_costs:
     st.markdown('<div class="section-header">Claude API Costs</div>', unsafe_allow_html=True)
 
     # KPI row
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total Spend", f"${total_all:.4f}")
-    k2.metric("Today", f"${cost_today:.4f}")
-    k3.metric("This Month", f"${cost_month:.4f}")
-    k4.metric("Cache Hit Rate (7d)", f"{cache_hit_rate:.1f}%")
+    st.markdown(f"""
+    <div class="metric-row">
+        <div class="metric-card">
+            <div class="metric-label">Total Spend</div>
+            <div class="metric-value">${total_all:.4f}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Today</div>
+            <div class="metric-value">${cost_today:.4f}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">This Month</div>
+            <div class="metric-value">${cost_month:.4f}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Cache Hit Rate (7d)</div>
+            <div class="metric-value">{cache_hit_rate:.1f}%</div>
+        </div>
+    </div>""", unsafe_allow_html=True)
 
     if daily_df.empty:
         st.info("No API usage data yet — data appears here after the first trading cycle.")
@@ -1806,10 +1820,24 @@ with tab_costs:
         savings_usd = recent["cr"] * (0.80 - 0.08) / 1_000_000
         daily_rate = cost_today
         monthly_proj = daily_rate * 22  # ~22 trading days
-        ce1, ce2, ce3 = st.columns(3)
-        ce1.metric("Cache Reads (7d)", f"{recent['cr']:,} tok", help="Tokens served from cache — cost 10× less than regular input")
-        ce2.metric("Savings from Cache (7d)", f"${savings_usd:.4f}", help="vs. paying full input price for those tokens")
-        ce3.metric("Projected Monthly", f"${monthly_proj:.2f}", help="Today's spend × 22 trading days")
+        st.markdown(f"""
+        <div class="metric-row">
+            <div class="metric-card">
+                <div class="metric-label">Cache Reads (7d)</div>
+                <div class="metric-value">{recent['cr']:,} tok</div>
+                <div class="metric-delta" style="color:#6b7280;">10× cheaper than input</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Savings from Cache (7d)</div>
+                <div class="metric-value">${savings_usd:.4f}</div>
+                <div class="metric-delta" style="color:#6b7280;">vs. full input price</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Projected Monthly</div>
+                <div class="metric-value">${monthly_proj:.2f}</div>
+                <div class="metric-delta" style="color:#6b7280;">today × 22 trading days</div>
+            </div>
+        </div>""", unsafe_allow_html=True)
 
         # Per-agent breakdown table
         if not totals_df.empty:
