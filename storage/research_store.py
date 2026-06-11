@@ -201,6 +201,17 @@ class ResearchStore:
             row["risk_factors"] = json.loads(row.get("risk_factors") or "[]")
         return rows
 
+    def get_signals_since(self, since: datetime) -> List[dict]:
+        """Return non-expired signals written at or after `since`."""
+        now = datetime.now(timezone.utc).isoformat()
+        since_iso = since.isoformat()
+        sql = (
+            "SELECT symbol, sentiment, conviction, recommended_action, signal_type "
+            "FROM research_signals WHERE ts >= %s AND expires_at > %s "
+            "ORDER BY conviction DESC"
+        )
+        return self._fetchall(sql, (since_iso, now))
+
     def _execute(self, sql: str, params: tuple):
         try:
             if self._backend == "postgres":

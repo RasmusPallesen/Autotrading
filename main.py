@@ -52,6 +52,10 @@ SCANNER_TRADE_THRESHOLD = float(config.agent.min_confidence)
 MINI_INTERVAL  = 180  # seconds — re-evaluate held positions (3 min; hot path covers urgent moves)
 SWEEP_INTERVAL = 900  # seconds — full symbol sweep (hot path is primary discovery)
 
+# News hot-path: immediately evaluate symbols with fresh high-conviction news signals
+NEWS_HOT_THRESHOLD = 0.65   # min conviction to trigger immediate eval
+NEWS_HOT_OVERLAP   = 10     # seconds of lookback overlap to avoid boundary gaps
+
 # ── Dynamic stream subscriptions ─────────────────────────────────────────────
 # Symbols discovered by scanners that are not in the core watchlist.
 # Subscribed to the WebSocket stream within 60 seconds of discovery so the
@@ -64,6 +68,7 @@ _dynamic_stream_symbols: set = set()
 # evaluated within MINI_INTERVAL seconds (by the hot path or a prior mini tick),
 # it skips the call to avoid paying for the same decision twice.
 _last_evaluated: dict = {}  # symbol → float (time.time())
+_last_news_drain: float = 0.0  # epoch seconds of last news-signal drain
 
 
 def _sync_dynamic_stream(bar_stream, research_store, core_symbols: set) -> None:
@@ -1432,6 +1437,158 @@ def _drain_hot_queue(
         processed += 1
 
 
+def _drain_news_signals(
+    research_store,
+    data_fetcher: AlpacaDataFetcher,
+    ai_engine: AIDecisionEngine,
+    executor: AlpacaExecutor,
+    risk: RiskManager,
+    store: TradeStore,
+    earnings_cal,
+    locked_symbols: frozenset = frozenset(),
+    bar_stream=None,
+) -> None:
+    """
+    Poll for research signals written in the last tick and immediately evaluate
+    any symbol whose conviction meets NEWS_HOT_THRESHOLD, without waiting for
+    the next sweep or a bar-stream hot event.
+    """
+    global _last_news_drain
+    now = time.time()
+    since_dt = datetime.fromtimestamp(
+        max(0.0, _last_news_drain - NEWS_HOT_OVERLAP), tz=timezone.utc
+    )
+    _last_news_drain = now
+
+    try:
+        recent = research_store.get_signals_since(since_dt)
+    except Exception as e:
+        logger.debug("[NEWS HOT] DB query failed: %s", e)
+        return
+
+    for sig in recent:
+        symbol   = sig.get("symbol", "")
+        conv     = float(sig.get("conviction", 0))
+        sig_type = sig.get("signal_type", "")
+
+        if conv < NEWS_HOT_THRESHOLD:
+            continue
+        if symbol in locked_symbols:
+            continue
+        last_eval = _last_evaluated.get(symbol, 0)
+        if now - last_eval < 60:
+            continue
+
+        logger.info(
+            "[NEWS HOT] %s — %s conv=%.0f%% type=%s — triggering immediate eval",
+            symbol, sig.get("sentiment"), conv * 100, sig_type,
+        )
+
+        try:
+            portfolio  = data_fetcher.get_account()
+            positions  = data_fetcher.get_positions()
+        except Exception as e:
+            logger.warning("[NEWS HOT] Portfolio fetch failed: %s", e)
+            continue
+        positions_map = {p["symbol"]: p for p in positions}
+
+        df = None
+        if bar_stream:
+            df = bar_stream.get_bars_df(symbol)
+        if df is None or len(df) < 10:
+            try:
+                rest = data_fetcher.get_bars(
+                    [symbol],
+                    lookback_bars=config.agent.indicator_lookback,
+                    timeframe="1Min",
+                )
+                df = rest.get(symbol)
+            except Exception as e:
+                logger.warning("[NEWS HOT] %s bar fetch failed: %s", symbol, e)
+                continue
+
+        if df is None or len(df) < 10:
+            logger.debug("[NEWS HOT] %s insufficient bars — skipping", symbol)
+            continue
+
+        snapshot = compute_signals(symbol, df)
+        if not snapshot:
+            continue
+
+        research_signal = None
+        try:
+            research_signal = research_store.get_signal(symbol)
+        except Exception:
+            pass
+
+        earnings_event = None
+        try:
+            if earnings_cal:
+                earnings_event = earnings_cal.get_events([symbol]).get(symbol)
+        except Exception:
+            pass
+
+        decision = ai_engine.decide(
+            snapshot, portfolio, positions_map.get(symbol),
+            research_signal=research_signal,
+            earnings_event=earnings_event,
+        )
+        _last_evaluated[symbol] = time.time()
+
+        if not decision or decision.action == "HOLD":
+            logger.info("[NEWS HOT] %s → HOLD", symbol)
+            continue
+
+        logger.info(
+            "[NEWS HOT] %s → %s conf=%.0f%% urgency=%s",
+            symbol, decision.action, decision.confidence * 100,
+            getattr(decision, "urgency", "?"),
+        )
+
+        _atr = snapshot.atr_14 if snapshot else None
+        verdict = risk.check(
+            decision, portfolio, positions_map,
+            min_confidence=config.agent.min_confidence,
+            atr=_atr,
+            current_price=snapshot.current_price if snapshot else None,
+        )
+        if not verdict.approved:
+            logger.info("[NEWS HOT] %s blocked: %s", symbol, verdict.reason)
+            continue
+
+        price = data_fetcher.get_latest_price(symbol)
+        _ext = is_post_market()
+
+        if decision.action == "BUY" and symbol not in positions_map:
+            if executor.is_pdt_blocked:
+                continue
+            stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
+            result = executor.buy(
+                symbol, verdict.adjusted_notional, stop, target,
+                extended_hours=_ext, limit_price=price if _ext else None,
+            )
+            if result and not hasattr(result, "is_pdt"):
+                store.log_execution(
+                    order_id=result["order_id"], symbol=symbol, side="BUY",
+                    notional=verdict.adjusted_notional, stop_loss=stop, take_profit=target,
+                )
+                logger.info("[NEWS HOT] BUY %s executed: %s", symbol, result)
+
+        elif decision.action == "SELL" and symbol in positions_map:
+            if symbol in locked_symbols:
+                continue
+            result = executor.sell(
+                symbol, close_all=True,
+                extended_hours=_ext, limit_price=price if _ext else None,
+            )
+            if result and not hasattr(result, "is_pdt"):
+                store.log_execution(
+                    order_id=result.get("order_id", ""), symbol=symbol, side="SELL",
+                    notional=float(positions_map[symbol]["market_value"]),
+                )
+                logger.info("[NEWS HOT] SELL %s executed: %s", symbol, result)
+
+
 def main():
     validate_config()
 
@@ -1578,18 +1735,28 @@ def main():
                 except Exception as e:
                     logger.warning("Mini loop error: %s", e)
 
-            # ── Hot queue drain (every 5 seconds) ──────────────────────────────
+            # ── Hot queue drain + news hot-path (every 5 seconds) ─────────────
+            _hot_locked: set = set()
+            try:
+                if store:
+                    _hot_locked = store.get_locked_symbols()
+            except Exception:
+                pass
+
             if bar_stream:
-                _hot_locked: set = set()
-                try:
-                    if store:
-                        _hot_locked = store.get_locked_symbols()
-                except Exception:
-                    pass
                 _drain_hot_queue(
                     bar_stream, data_fetcher, ai_engine, executor, risk,
                     store, research_store, earnings_cal,
                     locked_symbols=frozenset(_hot_locked),
+                )
+
+            # News hot-path: immediate eval for high-conviction news (≤5s latency)
+            if research_store:
+                _drain_news_signals(
+                    research_store, data_fetcher, ai_engine, executor, risk,
+                    store, earnings_cal,
+                    locked_symbols=frozenset(_hot_locked),
+                    bar_stream=bar_stream,
                 )
 
         else:
