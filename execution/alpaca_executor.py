@@ -74,10 +74,11 @@ class AlpacaExecutor:
         try:
             from alpaca.trading.client import TradingClient
             from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
-            from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+            from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
             self._OrderSide = OrderSide
             self._TimeInForce = TimeInForce
             self._MarketOrderRequest = MarketOrderRequest
+            self._LimitOrderRequest = LimitOrderRequest
             self._GetOrdersRequest = GetOrdersRequest
             self._QueryOrderStatus = QueryOrderStatus
 
@@ -101,18 +102,38 @@ class AlpacaExecutor:
         notional: float,
         stop_loss_price: Optional[float] = None,
         take_profit_price: Optional[float] = None,
+        extended_hours: bool = False,
+        limit_price: Optional[float] = None,
     ) -> Optional[dict]:
         """
-        Place a simple market buy order for a notional dollar amount.
-        Returns a result dict on success, ExecutionError on known failure, None on unknown failure.
+        Place a buy order. Uses a market order during regular hours; a limit order
+        with extended_hours=True during pre/post-market (Alpaca requirement).
         """
         try:
-            order_req = self._MarketOrderRequest(
-                symbol=symbol,
-                notional=round(notional, 2),
-                side=self._OrderSide.BUY,
-                time_in_force=self._TimeInForce.DAY,
-            )
+            if extended_hours and limit_price:
+                qty = math.floor(notional / limit_price * 1_000_000) / 1_000_000
+                if qty <= 0:
+                    logger.warning("BUY %s skipped — computed qty=0 at limit_price=%.2f", symbol, limit_price)
+                    return None
+                order_req = self._LimitOrderRequest(
+                    symbol=symbol,
+                    qty=qty,
+                    side=self._OrderSide.BUY,
+                    time_in_force=self._TimeInForce.DAY,
+                    limit_price=round(limit_price, 2),
+                    extended_hours=True,
+                )
+                logger.info(
+                    "BUY (EXT) %s | qty=%.4f | limit=$%.2f | notional≈$%.2f | paper=%s",
+                    symbol, qty, limit_price, notional, self.paper,
+                )
+            else:
+                order_req = self._MarketOrderRequest(
+                    symbol=symbol,
+                    notional=round(notional, 2),
+                    side=self._OrderSide.BUY,
+                    time_in_force=self._TimeInForce.DAY,
+                )
             order = self.client.submit_order(order_req)
 
             logger.info(
@@ -173,11 +194,12 @@ class AlpacaExecutor:
         symbol: str,
         qty: Optional[float] = None,
         close_all: bool = False,
+        extended_hours: bool = False,
+        limit_price: Optional[float] = None,
     ) -> Optional[dict]:
         """
-        Place a market sell order.
-        Use close_all=True to liquidate the entire position.
-        Returns a result dict on success, ExecutionError on known failure, None on unknown failure.
+        Place a sell order. Uses close_position() (market) during regular hours;
+        a limit order with extended_hours=True during pre/post-market.
         """
         try:
             open_orders = self.client.get_orders(
@@ -203,6 +225,38 @@ class AlpacaExecutor:
             logger.warning("Could not check open orders for %s: %s — proceeding with sell", symbol, e)
 
         try:
+            if extended_hours and limit_price:
+                # Extended hours: must use limit orders. Fetch position qty if close_all.
+                if close_all:
+                    pos = self.client.get_open_position(symbol)
+                    sell_qty = math.floor(float(pos.qty) * 1_000_000) / 1_000_000
+                else:
+                    if qty is None:
+                        raise ValueError("Must specify qty or close_all=True")
+                    sell_qty = math.floor(qty * 1_000_000) / 1_000_000
+                order_req = self._LimitOrderRequest(
+                    symbol=symbol,
+                    qty=sell_qty,
+                    side=self._OrderSide.SELL,
+                    time_in_force=self._TimeInForce.DAY,
+                    limit_price=round(limit_price, 2),
+                    extended_hours=True,
+                )
+                order = self.client.submit_order(order_req)
+                logger.info(
+                    "SELL (EXT) %s | qty=%.6f | limit=$%.2f | order_id=%s | paper=%s",
+                    symbol, sell_qty, limit_price, order.id, self.paper,
+                )
+                result = {
+                    "order_id": str(order.id),
+                    "symbol": symbol,
+                    "side": "SELL",
+                    "close_all": close_all,
+                }
+                if self._notify:
+                    notify_sell(symbol=symbol, notional=0.0, confidence=0.0, urgency="MEDIUM", paper=self.paper)
+                return result
+
             if close_all:
                 response = self.client.close_position(symbol)
                 logger.info("CLOSE POSITION %s | paper=%s", symbol, self.paper)
