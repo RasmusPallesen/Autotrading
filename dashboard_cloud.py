@@ -823,6 +823,24 @@ def load_iv_signals() -> pd.DataFrame:
     return df
 
 
+def load_news_signals() -> pd.DataFrame:
+    df = query("""
+        SELECT symbol, sentiment, conviction, recommended_action, summary, key_points, risk_factors, sources_used, ts
+        FROM research_signals
+        WHERE signal_type IN ('NEWS', 'BREAKING_NEWS')
+        AND expires_at > current_timestamp
+        AND id IN (SELECT MAX(id) FROM research_signals
+                   WHERE signal_type IN ('NEWS', 'BREAKING_NEWS')
+                   AND expires_at > current_timestamp GROUP BY symbol)
+        ORDER BY conviction DESC LIMIT 10
+    """)
+    if df.empty:
+        return df
+    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_localize(None).dt.tz_localize("Europe/Copenhagen", ambiguous="infer", nonexistent="shift_forward")
+    df["conviction_pct"] = (df["conviction"] * 100).round(0).astype(int)
+    return df
+
+
 def load_insider_signals() -> pd.DataFrame:
     df = query("""
         SELECT symbol, sentiment, conviction, recommended_action, summary, key_points, risk_factors, sources_used, ts
@@ -1284,6 +1302,7 @@ research   = load_research()
 scanner    = load_scanner()
 iv_df      = load_iv_signals()
 insider_df = load_insider_signals()
+news_df    = load_news_signals()
 
 # Pre-compute account values
 if account:
@@ -1522,6 +1541,49 @@ with tab_portfolio:
 # TAB 2 — SIGNALS
 # ════════════════════════════════════════════════════════════════════
 with tab_signals:
+
+    # ── Breaking News Movers ────────────────────────────────────────
+    if not news_df.empty:
+        st.markdown("""
+        <div class="scanner-banner">
+            <div class="scanner-title">
+                📰 Breaking News Movers
+                <span class="scanner-live">LIVE</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        show_all_news = st.toggle("Show all news hits", value=False, key="news_all")
+        news_rows = news_df if show_all_news else news_df.head(5)
+
+        for idx in range(len(news_rows)):
+            row = news_rows.iloc[idx]
+            sc_cls = {"BULLISH": "badge-bull", "BEARISH": "badge-bear"}.get(str(row["sentiment"]), "badge-neutral")
+            border_color = "#22c55e" if row["sentiment"] == "BULLISH" else "#ef4444" if row["sentiment"] == "BEARISH" else "#6b7280"
+            is_breaking = "BREAKING" in str(row.get("summary", ""))
+            badge_label = "BREAKING" if is_breaking else "NEWS"
+            key = f"news:{row['symbol']}:{idx}"
+            is_open = st.session_state.selected == key
+
+            st.markdown(f"""
+            <div class="card" style="margin-bottom:2px;border-left:3px solid {border_color};">
+                <div class="card-header">
+                    <a href="https://finance.yahoo.com/quote/{row['symbol']}" target="_blank"
+                       rel="noopener" style="text-decoration:none;color:inherit;">
+                        <span class="card-symbol" style="color:#f59e0b;">{row['symbol']}</span>
+                    </a>
+                    <div class="card-badges">
+                        <span class="badge {sc_cls}">{row['sentiment']}</span>
+                        <span class="badge badge-neutral">{badge_label}</span>
+                        <span class="badge badge-pct">{row['conviction_pct']}%</span>
+                    </div>
+                </div>
+                <div class="card-text">{str(row['summary'])[:180]}</div>
+            </div>""", unsafe_allow_html=True)
+
+            _card_button(key, row['symbol'], is_open)
+            if is_open:
+                _detail_panel(row.to_dict(), "news")
 
     # ── Scanner discoveries ─────────────────────────────────────────
     if not scanner.empty:
