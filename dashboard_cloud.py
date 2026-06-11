@@ -827,10 +827,10 @@ def load_news_signals() -> pd.DataFrame:
     df = query("""
         SELECT symbol, sentiment, conviction, recommended_action, summary, key_points, risk_factors, sources_used, ts
         FROM research_signals
-        WHERE signal_type IN ('NEWS', 'BREAKING_NEWS')
+        WHERE signal_type IN ('NEWS', 'BREAKING_NEWS', 'NEWS_SENTIMENT')
         AND expires_at > current_timestamp
         AND id IN (SELECT MAX(id) FROM research_signals
-                   WHERE signal_type IN ('NEWS', 'BREAKING_NEWS')
+                   WHERE signal_type IN ('NEWS', 'BREAKING_NEWS', 'NEWS_SENTIMENT')
                    AND expires_at > current_timestamp GROUP BY symbol)
         ORDER BY conviction DESC LIMIT 10
     """)
