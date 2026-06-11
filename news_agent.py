@@ -171,6 +171,7 @@ def _make_news_handler(
             summary     = str(getattr(article, "summary",  "") or "")
             source      = str(getattr(article, "source",   "") or "")
             symbols     = list(getattr(article, "symbols",  []) or [])
+            url         = str(getattr(article, "url",       "") or "")
             created_at  = getattr(article, "created_at", None)
             pub_str     = created_at.isoformat() if created_at else datetime.now(timezone.utc).isoformat()
 
@@ -204,6 +205,8 @@ def _make_news_handler(
             signal_type = result.get("signal_type", "GENERAL_NEWS")
             ai_summary  = result.get("summary", headline)
             key_points  = result.get("key_points", [headline])
+            if url:
+                key_points = list(key_points) + [f"Article: {url}"]
             ttl         = _signal_ttl()
 
             if conviction >= 0.70:
