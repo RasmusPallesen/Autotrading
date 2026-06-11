@@ -3,1361 +3,1200 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Autonomous Wealth Engine — C-Level Presentation</title>
+<title>Autonomous AI Trading Engine — Executive Presentation</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --gold: #F0B429;
-    --gold-light: #FBBF24;
-    --green: #10B981;
-    --red: #EF4444;
-    --blue: #3B82F6;
-    --indigo: #6366F1;
-    --bg: #0A0E1A;
-    --surface: #111827;
-    --surface2: #1F2937;
-    --border: #374151;
-    --text: #F9FAFB;
-    --muted: #9CA3AF;
-    --accent: #F0B429;
-  }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:       #0A0E1A;
+  --surface:  #111827;
+  --surface2: #1a2235;
+  --gold:     #F0B429;
+  --gold-dim: #c8952a;
+  --green:    #10B981;
+  --red:      #EF4444;
+  --blue:     #3B82F6;
+  --purple:   #8B5CF6;
+  --pink:     #EC4899;
+  --text:     #F9FAFB;
+  --muted:    #9CA3AF;
+  --border:   #1F2937;
+}
 
-  body {
-    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    overflow: hidden;
-    height: 100vh;
-  }
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; overflow: hidden; }
 
-  /* ─── Slide Container ─────────────────────────────── */
-  .deck {
-    width: 100vw;
-    height: 100vh;
-    position: relative;
-  }
+#deck { width: 100vw; height: 100vh; position: relative; }
 
-  .slide {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    padding: 56px 72px 40px;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.45s ease;
-  }
+.slide {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  padding: 44px 64px 52px;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.35s ease;
+  overflow: hidden;
+}
+.slide.active { opacity: 1; pointer-events: all; }
 
-  .slide.active {
-    opacity: 1;
-    pointer-events: all;
-  }
+#progress-bar {
+  position: fixed; top: 0; left: 0; height: 3px;
+  background: var(--gold); transition: width 0.35s ease; z-index: 100;
+}
 
-  /* ─── Navigation ──────────────────────────────────── */
-  .nav {
-    position: fixed;
-    bottom: 28px;
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    align-items: center;
-    gap: 20px;
-    z-index: 100;
-  }
+#nav {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 12px; align-items: center; z-index: 100;
+}
+.nav-btn {
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); padding: 8px 22px; border-radius: 8px;
+  cursor: pointer; font-size: 14px; font-family: inherit;
+  transition: background 0.2s, border-color 0.2s;
+}
+.nav-btn:hover { background: var(--surface); border-color: var(--gold); }
+#slide-counter { font-size: 13px; color: var(--muted); min-width: 56px; text-align: center; }
 
-  .nav button {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 8px 22px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 14px;
-    transition: background 0.2s, border-color 0.2s;
-  }
+/* typography */
+.slide-label { font-size: 11px; font-weight: 600; letter-spacing: 2.5px; color: var(--gold); text-transform: uppercase; margin-bottom: 6px; }
+.slide-title { font-size: 40px; font-weight: 800; line-height: 1.1; margin-bottom: 6px; }
+.slide-sub   { font-size: 16px; color: var(--muted); margin-bottom: 28px; }
+.gold   { color: var(--gold); }
+.green  { color: var(--green); }
+.red    { color: var(--red); }
+.blue   { color: var(--blue); }
+.purple { color: var(--purple); }
 
-  .nav button:hover { background: var(--surface); border-color: var(--gold); color: var(--gold); }
+/* cards */
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 20px;
+}
+.stat-val   { font-size: 32px; font-weight: 800; color: var(--gold); line-height: 1; }
+.stat-label { font-size: 11px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+.stat-sub   { font-size: 12px; color: var(--muted); margin-top: 6px; }
 
-  .slide-counter {
-    font-size: 13px;
-    color: var(--muted);
-    min-width: 60px;
-    text-align: center;
-  }
+/* grids */
+.g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.g3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+.g4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 14px; }
+.col2 { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; flex: 1; min-height: 0; }
+.col3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; flex: 1; min-height: 0; }
 
-  .progress-bar {
-    position: fixed;
-    top: 0; left: 0;
-    height: 3px;
-    background: linear-gradient(90deg, var(--gold), var(--green));
-    transition: width 0.4s ease;
-    z-index: 200;
-  }
+/* chart panel */
+.chart-panel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; padding: 20px;
+  display: flex; flex-direction: column;
+}
+.chart-title { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; }
 
-  /* ─── Typography ──────────────────────────────────── */
-  .slide-label {
-    font-size: 11px;
-    letter-spacing: 2.5px;
-    text-transform: uppercase;
-    color: var(--gold);
-    margin-bottom: 14px;
-    font-weight: 600;
-  }
+/* feature list */
+.feat-list { list-style: none; display: flex; flex-direction: column; gap: 11px; }
+.feat-list li { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; line-height: 1.5; }
+.fi { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
 
-  h1 { font-size: 52px; font-weight: 700; line-height: 1.1; }
-  h2 { font-size: 36px; font-weight: 700; line-height: 1.15; }
-  h3 { font-size: 20px; font-weight: 600; }
-  p  { font-size: 16px; line-height: 1.65; color: var(--muted); }
+/* pills */
+.pills { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.pill {
+  padding: 4px 12px; border-radius: 100px; font-size: 12px; font-weight: 500;
+  background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
+}
+.pill-gold   { border-color: #78511a; color: var(--gold); }
+.pill-green  { border-color: #065F46; color: var(--green); }
+.pill-blue   { border-color: #1e3a8a; color: var(--blue); }
+.pill-purple { border-color: #4c1d95; color: var(--purple); }
+.pill-red    { border-color: #7f1d1d; color: var(--red); }
 
-  .gold  { color: var(--gold); }
-  .green { color: var(--green); }
-  .blue  { color: var(--blue); }
-  .muted { color: var(--muted); }
+/* json */
+.json-card {
+  background: #0d1117; border: 1px solid #30363d;
+  border-radius: 10px; padding: 18px;
+  font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
+  line-height: 1.85; color: #c9d1d9;
+}
+.jk { color: #79c0ff; }
+.js { color: #a5d6ff; }
+.jn { color: #F0B429; }
+.jb { color: #56d364; }
 
-  /* ─── Utilities ───────────────────────────────────── */
-  .grid-2  { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
-  .grid-3  { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; }
-  .grid-4  { display: grid; grid-template-columns: repeat(4,1fr); gap: 20px; }
-  .flex    { display: flex; gap: 16px; }
-  .col     { display: flex; flex-direction: column; gap: 12px; }
-  .mt-sm   { margin-top: 16px; }
-  .mt-md   { margin-top: 28px; }
-  .mt-lg   { margin-top: 40px; }
+/* risk steps */
+.risk-step {
+  display: flex; align-items: center; gap: 14px; padding: 11px 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 14px;
+}
+.risk-step:first-child { border-radius: 10px 10px 0 0; }
+.risk-step:last-child  { border-radius: 0 0 10px 10px; }
+.risk-step + .risk-step { border-top: none; }
+.rs-num {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--surface2); border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: var(--gold); flex-shrink: 0;
+}
+.rs-label { flex: 1; font-weight: 500; }
+.rs-val   { font-size: 12px; color: var(--gold); font-weight: 600; }
+.rs-check { font-size: 15px; opacity: 0; transition: opacity 0.3s; }
+.rs-check.on { opacity: 1; }
 
-  /* ─── Cards ───────────────────────────────────────── */
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 24px;
-  }
+/* timeline */
+.tl { display: flex; flex-direction: column; gap: 0; }
+.tl-item { display: flex; gap: 18px; padding-bottom: 18px; position: relative; }
+.tl-item:not(:last-child)::before {
+  content: ''; position: absolute; left: 14px; top: 30px;
+  width: 2px; bottom: 0; background: var(--border);
+}
+.tl-dot {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; border: 2px solid;
+}
+.tl-done   { background: #065F46; border-color: var(--green); color: var(--green); }
+.tl-active { background: #78350F; border-color: var(--gold);  color: var(--gold); }
+.tl-future { background: var(--surface2); border-color: var(--border); color: var(--muted); }
+.tl-title  { font-weight: 600; font-size: 14px; margin-bottom: 3px; }
+.tl-desc   { font-size: 13px; color: var(--muted); line-height: 1.5; }
 
-  .card-gold { border-color: rgba(240,180,41,0.4); background: rgba(240,180,41,0.06); }
-  .card-green { border-color: rgba(16,185,129,0.4); background: rgba(16,185,129,0.06); }
-  .card-blue { border-color: rgba(59,130,246,0.4); background: rgba(59,130,246,0.06); }
-  .card-red  { border-color: rgba(239,68,68,0.4);  background: rgba(239,68,68,0.06); }
-  .card-indigo { border-color: rgba(99,102,241,0.4); background: rgba(99,102,241,0.06); }
+/* legend */
+.leg-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.leg-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 
-  /* ─── Stat Blocks ─────────────────────────────────── */
-  .stat {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 20px 18px;
-    text-align: center;
-  }
-  .stat-value { font-size: 30px; font-weight: 700; color: var(--gold); line-height: 1; }
-  .stat-label { font-size: 12px; color: var(--muted); margin-top: 6px; letter-spacing: 0.5px; }
-
-  /* ─── Tag / Badge ─────────────────────────────────── */
-  .tag {
-    display: inline-block;
-    padding: 3px 10px;
-    border-radius: 99px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-  }
-  .tag-gold   { background: rgba(240,180,41,0.15); color: var(--gold); border: 1px solid rgba(240,180,41,0.3); }
-  .tag-green  { background: rgba(16,185,129,0.15); color: var(--green); border: 1px solid rgba(16,185,129,0.3); }
-  .tag-blue   { background: rgba(59,130,246,0.15); color: var(--blue); border: 1px solid rgba(59,130,246,0.3); }
-  .tag-red    { background: rgba(239,68,68,0.15);  color: var(--red);  border: 1px solid rgba(239,68,68,0.3); }
-  .tag-indigo { background: rgba(99,102,241,0.15); color: var(--indigo); border: 1px solid rgba(99,102,241,0.3); }
-
-  /* ─── List ────────────────────────────────────────── */
-  .bullet-list { list-style: none; display: flex; flex-direction: column; gap: 10px; }
-  .bullet-list li {
-    display: flex; align-items: flex-start; gap: 10px;
-    font-size: 15px; line-height: 1.5; color: var(--muted);
-  }
-  .bullet-list li::before {
-    content: "▸";
-    color: var(--gold);
-    flex-shrink: 0;
-    margin-top: 1px;
-  }
-
-  /* ─── Divider ─────────────────────────────────────── */
-  .divider {
-    height: 1px;
-    background: linear-gradient(90deg, var(--gold), transparent);
-    margin: 20px 0;
-  }
-
-  /* ─── Arch Diagram ─────────────────────────────────── */
-  .arch-box {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px 16px;
-    background: var(--surface);
-    font-size: 13px;
-    font-weight: 600;
-    text-align: center;
-  }
-  .arch-arrow {
-    text-align: center;
-    color: var(--gold);
-    font-size: 20px;
-    line-height: 1;
-  }
-
-  /* ─── Table ────────────────────────────────────────── */
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th {
-    text-align: left; padding: 10px 14px;
-    background: var(--surface2);
-    color: var(--gold);
-    font-size: 11px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    border-bottom: 1px solid var(--border);
-  }
-  td {
-    padding: 9px 14px;
-    color: var(--muted);
-    border-bottom: 1px solid rgba(55,65,81,0.5);
-    vertical-align: top;
-  }
-  tr:last-child td { border-bottom: none; }
-  tr:hover td { background: rgba(255,255,255,0.02); }
-
-  /* ─── Big Number Hero ──────────────────────────────── */
-  .hero-number {
-    font-size: 72px;
-    font-weight: 800;
-    color: var(--gold);
-    line-height: 1;
-  }
-
-  /* ─── Slide 1: Title ──────────────────────────────── */
-  #s1 {
-    background: radial-gradient(ellipse at 20% 50%, rgba(240,180,41,0.08) 0%, transparent 60%),
-                radial-gradient(ellipse at 80% 20%, rgba(16,185,129,0.06) 0%, transparent 50%),
-                var(--bg);
-    justify-content: center;
-    align-items: flex-start;
-  }
-
-  /* ─── Timeline / Flow ─────────────────────────────── */
-  .flow {
-    display: flex;
-    align-items: center;
-    gap: 0;
-    flex-wrap: nowrap;
-  }
-  .flow-step {
-    flex: 1;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 12px;
-    text-align: center;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text);
-    position: relative;
-  }
-  .flow-step .step-num {
-    font-size: 10px;
-    color: var(--gold);
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    display: block;
-    margin-bottom: 4px;
-  }
-  .flow-arrow {
-    color: var(--gold);
-    font-size: 18px;
-    padding: 0 6px;
-    flex-shrink: 0;
-  }
-
-  /* ─── Roadmap ─────────────────────────────────────── */
-  .roadmap-item {
-    display: flex;
-    gap: 16px;
-    align-items: flex-start;
-  }
-  .roadmap-dot {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 14px;
-    flex-shrink: 0;
-  }
-
-  /* ─── Keyboard hint ───────────────────────────────── */
-  .key-hint {
-    position: fixed;
-    top: 16px;
-    right: 24px;
-    font-size: 11px;
-    color: var(--border);
-    z-index: 100;
-  }
+/* summary numbers */
+.big-num { font-size: 46px; font-weight: 900; color: var(--gold); line-height: 1; }
 </style>
 </head>
 <body>
 
-<div class="progress-bar" id="progress"></div>
-<div class="key-hint">← → Arrow keys to navigate</div>
+<div id="progress-bar"></div>
 
-<div class="deck" id="deck">
+<div id="deck">
 
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 1 — TITLE
-═══════════════════════════════════════════════════════ -->
-<div class="slide active" id="s1">
-  <div style="margin-top: auto; margin-bottom: auto; max-width: 780px;">
-    <div class="slide-label">Executive Briefing — Confidential</div>
-    <h1>Autonomous<br><span class="gold">Wealth Engine</span></h1>
-    <h1 style="font-size:38px; font-weight:400; color:var(--muted); margin-top:12px;">
-      AI-Powered NYSE Portfolio Management
+<!-- ═══════════════════════════════════════
+     S1 — TITLE
+═══════════════════════════════════════ -->
+<section class="slide active" id="s1">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <div style="font-size:11px; letter-spacing:3px; text-transform:uppercase; color:var(--gold); margin-bottom:22px;">Confidential · Executive Briefing · 2026</div>
+    <h1 style="font-size:62px; font-weight:900; line-height:1.05; max-width:780px; margin-bottom:22px;">
+      Autonomous AI<br><span class="gold">Trading Engine</span>
     </h1>
-    <div class="divider" style="margin: 32px 0; max-width: 320px;"></div>
-    <p style="font-size: 18px; max-width: 620px; color: var(--muted);">
-      A fully autonomous, multi-agent trading system that researches, decides, and executes equity trades on the New York Stock Exchange — continuously, systematically, and at machine speed.
+    <p style="font-size:19px; color:var(--muted); max-width:600px; line-height:1.65; margin-bottom:44px;">
+      A production-grade algorithmic trading system powered by Claude AI —
+      monitoring <strong style="color:var(--text)">55 symbols</strong> across 7 sectors with
+      sub-5-second decision latency via a WebSocket hot path.
     </p>
-    <div class="flex" style="margin-top: 40px; flex-wrap: wrap; gap: 12px;">
-      <span class="tag tag-gold">AI-Driven Decisions</span>
-      <span class="tag tag-green">NYSE Live Trading</span>
-      <span class="tag tag-blue">24/7 Autonomous</span>
-      <span class="tag tag-indigo">Enterprise Risk Controls</span>
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+      <span class="pill pill-gold" style="padding:7px 18px; font-size:13px;">Live on Alpaca Markets</span>
+      <span class="pill pill-green" style="padding:7px 18px; font-size:13px;">WebSocket Hot Path &lt;5s</span>
+      <span class="pill pill-blue" style="padding:7px 18px; font-size:13px;">3-Cadence Architecture</span>
+      <span class="pill pill-purple" style="padding:7px 18px; font-size:13px;">PostgreSQL · Railway.app</span>
     </div>
   </div>
-  <div style="display:flex; gap:40px; margin-top: auto;">
-    <div><div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:1px;">Technology</div><div style="font-size:15px; font-weight:600; margin-top:4px;">Claude AI + Python</div></div>
-    <div><div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:1px;">Broker</div><div style="font-size:15px; font-weight:600; margin-top:4px;">Alpaca Markets</div></div>
-    <div><div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:1px;">Codebase</div><div style="font-size:15px; font-weight:600; margin-top:4px;">8,600 Lines / 48 Modules</div></div>
-    <div><div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:1px;">Operational Cost</div><div style="font-size:15px; font-weight:600; margin-top:4px; color:var(--green);">~€35 / month</div></div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     S2 — THE OPPORTUNITY
+═══════════════════════════════════════ -->
+<section class="slide" id="s2">
+  <div class="slide-label">Market Opportunity</div>
+  <div class="slide-title">Speed Is the <span class="gold">Alpha</span></div>
+  <div class="slide-sub">AI-driven latency advantage over traditional systematic approaches</div>
+
+  <div class="col2" style="align-items:start; gap:36px;">
+    <div style="display:flex; flex-direction:column; gap:16px;">
+      <div class="chart-panel" style="height:220px;">
+        <div class="chart-title">Decision Latency Comparison</div>
+        <svg id="latency-chart" width="100%" height="170"></svg>
+      </div>
+      <div class="g2">
+        <div class="card"><div class="stat-val green">&lt;5s</div><div class="stat-label">Hot Path Latency</div><div class="stat-sub">WebSocket bar-close triggered</div></div>
+        <div class="card"><div class="stat-val">55</div><div class="stat-label">Symbols Monitored</div><div class="stat-sub">7 high-growth sectors</div></div>
+      </div>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div class="card">
+        <div style="font-size:14px; font-weight:600; margin-bottom:12px;">Why AI Beats Rules-Based Systems</div>
+        <ul class="feat-list">
+          <li><span class="fi">🧠</span><span>Claude synthesises price action, news sentiment, and research signals simultaneously — no hand-coded rules</span></li>
+          <li><span class="fi">⚡</span><span>WebSocket bar-close events trigger decisions in &lt;5 seconds; cron-based approaches take 5–15 minutes</span></li>
+          <li><span class="fi">📊</span><span>14 live data monitors feed a continuously updated research store — every decision is context-rich</span></li>
+          <li><span class="fi">🔒</span><span>Hard risk guardrails run before every AI decision: drawdown kill-switch, position caps, T+2 settlement</span></li>
+        </ul>
+      </div>
+      <div class="card">
+        <div style="font-size:11px; color:var(--muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">Sectors Covered</div>
+        <div class="pills">
+          <span class="pill pill-gold">AI Chips (10)</span>
+          <span class="pill pill-gold">AI Software (8)</span>
+          <span class="pill pill-green">Green Energy (10)</span>
+          <span class="pill pill-green">MedTech (10)</span>
+          <span class="pill pill-blue">Biotech (5)</span>
+          <span class="pill pill-blue">Drone/Defence (8)</span>
+          <span class="pill">General (4)</span>
+        </div>
+      </div>
+    </div>
   </div>
-</div>
+</section>
 
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 2 — THE OPPORTUNITY
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s2">
-  <div class="slide-label">The Opportunity</div>
-  <h2>Human Trading Has a <span class="gold">Fundamental Problem</span></h2>
-  <p style="margin-top:10px;">Markets move faster and hold more information than any human can process alone.</p>
+<!-- ═══════════════════════════════════════
+     S3 — ARCHITECTURE
+═══════════════════════════════════════ -->
+<section class="slide" id="s3">
+  <div class="slide-label">System Design</div>
+  <div class="slide-title">Four-Layer <span class="gold">Architecture</span></div>
+  <div class="slide-sub">Data ingestion → Research → AI Decision → Execution</div>
+  <div class="chart-panel" style="flex:1; min-height:0;">
+    <svg id="arch-chart" width="100%" height="100%"></svg>
+  </div>
+</section>
 
-  <div class="grid-3 mt-md">
-    <div class="card card-red">
-      <div style="font-size:28px; margin-bottom:10px;">⏱</div>
-      <h3 style="color:var(--red);">Speed</h3>
-      <p style="font-size:14px; margin-top:8px;">A human analyst can monitor a handful of stocks. This system evaluates 24+ symbols every 5 minutes — 288 full cycles per trading day.</p>
+<!-- ═══════════════════════════════════════
+     S4 — THREE-CADENCE LOOP
+═══════════════════════════════════════ -->
+<section class="slide" id="s4">
+  <div class="slide-label">Execution Model</div>
+  <div class="slide-title">Three-Cadence <span class="gold">Loop</span></div>
+  <div class="slide-sub">Hot path, position sync, and full market sweep operating in parallel</div>
+
+  <div class="col2" style="align-items:center;">
+    <div class="chart-panel" style="height:360px; align-items:center; justify-content:center;">
+      <svg id="cadence-chart" width="320" height="320"></svg>
     </div>
-    <div class="card card-red">
-      <div style="font-size:28px; margin-bottom:10px;">🧠</div>
-      <h3 style="color:var(--red);">Emotion</h3>
-      <p style="font-size:14px; margin-top:8px;">Fear and greed cause human traders to hold losers too long and sell winners too early. Algorithmic decisions are cold, consistent, and rules-based.</p>
-    </div>
-    <div class="card card-red">
-      <div style="font-size:28px; margin-bottom:10px;">📊</div>
-      <h3 style="color:var(--red);">Data Scope</h3>
-      <p style="font-size:14px; margin-top:8px;">No individual can simultaneously track SEC filings, options IV spikes, insider transactions, earnings calendars, and technical signals — all at once.</p>
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div class="card" style="border-left:3px solid var(--red);">
+        <div style="font-size:10px; letter-spacing:2px; color:var(--red); text-transform:uppercase; margin-bottom:6px;">Hot Path · ~5 seconds</div>
+        <div style="font-size:14px; line-height:1.6;">WebSocket bar-close events trigger a single-symbol AI decision. Only fires when <code style="background:#1a2235; padding:1px 6px; border-radius:3px; font-size:11px;">_is_hot()</code> criteria met: volume ×2, RSI bounce (&lt;30→≥30), VWAP cross, 20-bar high, EMA-21 cross, or held-position drop &gt;2%.</div>
+      </div>
+      <div class="card" style="border-left:3px solid var(--gold);">
+        <div style="font-size:10px; letter-spacing:2px; color:var(--gold); text-transform:uppercase; margin-bottom:6px;">Mini Loop · 60 seconds</div>
+        <div style="font-size:14px; line-height:1.6;">Evaluates all currently held positions every 60 seconds. Rapid stop-loss and take-profit monitoring without triggering a full 55-symbol sweep.</div>
+      </div>
+      <div class="card" style="border-left:3px solid var(--blue);">
+        <div style="font-size:10px; letter-spacing:2px; color:var(--blue); text-transform:uppercase; margin-bottom:6px;">Full Sweep · 15 minutes</div>
+        <div style="font-size:14px; line-height:1.6;">Complete pass across all 55 symbols enriched with research signals from all 14 data monitors. Discovers new entries and confirms existing positions.</div>
+      </div>
     </div>
   </div>
+</section>
 
-  <div class="card card-gold mt-md" style="display:flex; align-items:center; gap:32px;">
-    <div style="font-size:40px; flex-shrink:0;">💡</div>
+<!-- ═══════════════════════════════════════
+     S5 — TRADING UNIVERSE
+═══════════════════════════════════════ -->
+<section class="slide" id="s5">
+  <div class="slide-label">Universe</div>
+  <div class="slide-title">55 Symbols · <span class="gold">7 Sectors</span></div>
+  <div class="slide-sub">High-conviction growth themes with AI-native scoring</div>
+
+  <div class="col2" style="align-items:center; gap:48px;">
+    <div class="chart-panel" style="height:360px; align-items:center; justify-content:center;">
+      <svg id="donut-chart" width="300" height="300"></svg>
+    </div>
     <div>
-      <h3 class="gold">The Answer: A Tireless, Intelligent Agent Pair</h3>
-      <p style="font-size:15px; margin-top:6px;">Two AI agents working in tandem — one researching the market continuously, one executing disciplined trades — creating a systematic engine for wealth accumulation that operates without fatigue, bias, or distraction.</p>
-    </div>
-  </div>
-
-  <div class="grid-4 mt-md">
-    <div class="stat"><div class="stat-value">288</div><div class="stat-label">Decision cycles / day</div></div>
-    <div class="stat"><div class="stat-value">24+</div><div class="stat-label">NYSE symbols monitored</div></div>
-    <div class="stat"><div class="stat-value">8</div><div class="stat-label">Independent data sources</div></div>
-    <div class="stat"><div class="stat-value">500ms</div><div class="stat-label">Avg decision latency</div></div>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 3 — SYSTEM OVERVIEW
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s3">
-  <div class="slide-label">Architecture</div>
-  <h2>A <span class="gold">Two-Agent</span> System Built for Scale</h2>
-  <p style="margin-top:8px;">Independent agents with specialised roles, coordinated through a shared intelligence layer.</p>
-
-  <div class="grid-2 mt-md" style="align-items: start;">
-    <!-- Architecture diagram -->
-    <div style="display:flex; flex-direction:column; gap:10px;">
-
-      <div style="display:grid; grid-template-columns:1fr 40px 1fr; align-items:center; gap:8px;">
-        <div class="arch-box card-gold" style="border-color:rgba(240,180,41,0.5);">
-          <div style="font-size:10px; color:var(--gold); letter-spacing:1px; text-transform:uppercase; margin-bottom:4px;">Agent 1</div>
-          <div style="font-size:16px;">🔬 Research Agent</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Every 15 min</div>
-        </div>
-        <div class="arch-arrow">→</div>
-        <div class="arch-box card-blue" style="border-color:rgba(59,130,246,0.5);">
-          <div style="font-size:10px; color:var(--blue); letter-spacing:1px; text-transform:uppercase; margin-bottom:4px;">Shared Layer</div>
-          <div style="font-size:16px;">🗄 Research Store</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">PostgreSQL / SQLite</div>
-        </div>
-      </div>
-
-      <div style="display:grid; grid-template-columns:1fr 40px 1fr; align-items:center; gap:8px;">
-        <div style="padding:10px 0 0 16px; color:var(--muted); font-size:12px;">
-          SEC Filings · Insider Trades<br>Earnings · Options IV · Catalysts
-        </div>
-        <div></div>
-        <div class="arch-arrow" style="text-align:left; padding-left:16px;">↓</div>
-      </div>
-
-      <div style="display:grid; grid-template-columns:1fr 40px 1fr; align-items:center; gap:8px;">
-        <div class="arch-box" style="border-color: rgba(16,185,129,0.4); background: rgba(16,185,129,0.06);">
-          <div style="font-size:10px; color:var(--green); letter-spacing:1px; text-transform:uppercase; margin-bottom:4px;">Live Data</div>
-          <div style="font-size:16px;">📈 Market Feed</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Alpaca — 1-min OHLCV bars</div>
-        </div>
-        <div class="arch-arrow">→</div>
-        <div class="arch-box card-gold" style="border-color:rgba(240,180,41,0.5);">
-          <div style="font-size:10px; color:var(--gold); letter-spacing:1px; text-transform:uppercase; margin-bottom:4px;">Agent 2</div>
-          <div style="font-size:16px;">⚡ Trading Agent</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Every 5 min</div>
-        </div>
-      </div>
-
-      <div style="display:grid; grid-template-columns:1fr 40px 1fr; align-items:center; gap:8px;">
-        <div></div>
-        <div></div>
-        <div class="arch-arrow" style="text-align:center;">↓</div>
-      </div>
-
-      <div style="display:grid; grid-template-columns:1fr 40px 1fr; align-items:center; gap:8px;">
-        <div class="arch-box card-indigo">
-          <div style="font-size:10px; color:var(--indigo); letter-spacing:1px; text-transform:uppercase; margin-bottom:4px;">Guardrails</div>
-          <div style="font-size:16px;">🛡 Risk Manager</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Kill switch · Position limits</div>
-        </div>
-        <div class="arch-arrow">←</div>
-        <div class="arch-box card-green">
-          <div style="font-size:10px; color:var(--green); letter-spacing:1px; text-transform:uppercase; margin-bottom:4px;">Brain</div>
-          <div style="font-size:16px;">🤖 Claude AI</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">BUY / SELL / HOLD decision</div>
-        </div>
-      </div>
-
-      <div class="arch-arrow" style="text-align:left; padding-left:16px;">↓</div>
-
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-        <div class="arch-box card-green">
-          <div style="font-size:14px;">📤 Alpaca Executor</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Bracket orders on NYSE</div>
-        </div>
-        <div class="arch-box card-blue">
-          <div style="font-size:14px;">📊 Dashboard</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Real-time P&amp;L · Streamlit</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Right panel -->
-    <div class="col">
+      <div id="sector-legend" style="display:flex; flex-direction:column; gap:13px; margin-bottom:20px;"></div>
       <div class="card">
-        <h3 class="gold">Separation of Concerns</h3>
-        <p style="font-size:14px; margin-top:8px;">The Research Agent runs slow, deep analysis in the background. The Trading Agent acts fast on live price data. Neither blocks the other — they communicate through the database.</p>
-      </div>
-      <div class="card card-gold mt-sm">
-        <h3>Signal Lifecycle</h3>
-        <ul class="bullet-list" style="margin-top:10px; font-size:14px;">
-          <li>Research agent writes conviction signals with 4-hour TTL</li>
-          <li>Trading agent reads signals at execution time</li>
-          <li>Claude AI blends signals with live technicals</li>
-          <li>Risk Manager validates every decision independently</li>
-          <li>Full audit trail written to database per trade</li>
-        </ul>
-      </div>
-      <div class="card" style="display:flex; gap:20px;">
-        <div style="text-align:center; flex:1;">
-          <div style="font-size:24px; font-weight:700; color:var(--gold);">48</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Python modules</div>
-        </div>
-        <div style="text-align:center; flex:1;">
-          <div style="font-size:24px; font-weight:700; color:var(--green);">7</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Specialised layers</div>
-        </div>
-        <div style="text-align:center; flex:1;">
-          <div style="font-size:24px; font-weight:700; color:var(--blue);">3</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Cloud deployment options</div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">Example Tickers</div>
+        <div class="pills">
+          <span class="pill pill-gold">NVDA</span><span class="pill pill-gold">AMD</span>
+          <span class="pill pill-green">ENPH</span><span class="pill pill-green">FSLR</span>
+          <span class="pill pill-blue">ISRG</span><span class="pill pill-blue">DXCM</span>
+          <span class="pill pill-purple">MRNA</span><span class="pill pill-purple">BNTX</span>
+          <span class="pill pill-red">RKLB</span><span class="pill pill-red">JOBY</span>
         </div>
       </div>
     </div>
   </div>
-</div>
+</section>
 
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 4 — TRADING AGENT
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s4">
-  <div class="slide-label">Agent 1 of 2</div>
-  <h2>The <span class="gold">Trading Agent</span> — Tactical Execution at Machine Speed</h2>
-  <p style="margin-top:8px;">The primary execution loop — evaluates every symbol in the watchlist every 5 minutes and places bracket orders on the NYSE.</p>
+<!-- ═══════════════════════════════════════
+     S6 — AI DECISION ENGINE
+═══════════════════════════════════════ -->
+<section class="slide" id="s6">
+  <div class="slide-label">AI Core</div>
+  <div class="slide-title">Claude AI <span class="gold">Decision Engine</span></div>
+  <div class="slide-sub">Structured JSON signals at &lt;256 output tokens per decision</div>
 
-  <div class="mt-md">
-    <div class="flow">
-      <div class="flow-step"><span class="step-num">Step 1</span>Fetch 1-min OHLCV<br><span style="color:var(--muted); font-size:11px; font-weight:400;">50-bar lookback</span></div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-step"><span class="step-num">Step 2</span>Compute Indicators<br><span style="color:var(--muted); font-size:11px; font-weight:400;">RSI · MACD · EMA · BB · ATR</span></div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-step"><span class="step-num">Step 3</span>Inject Research<br><span style="color:var(--muted); font-size:11px; font-weight:400;">Conviction + sentiment</span></div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-step"><span class="step-num">Step 4</span>Claude Decision<br><span style="color:var(--muted); font-size:11px; font-weight:400;">BUY / SELL / HOLD</span></div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-step"><span class="step-num">Step 5</span>Risk Validate<br><span style="color:var(--muted); font-size:11px; font-weight:400;">Guardrails applied</span></div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-step card-gold" style="border-color:rgba(240,180,41,0.5);"><span class="step-num">Step 6</span>Execute &amp; Log<br><span style="color:var(--muted); font-size:11px; font-weight:400;">Bracket order placed</span></div>
+  <div class="col2">
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div class="json-card">
+        <div style="color:#6e7681; margin-bottom:10px; font-size:10px; letter-spacing:1px;">SAMPLE AGENT OUTPUT</div>
+<span class="jk">"action"</span>: <span class="js">"BUY"</span>,<br>
+<span class="jk">"confidence"</span>: <span class="jn">0.78</span>,<br>
+<span class="jk">"urgency"</span>: <span class="js">"HIGH"</span>,<br>
+<span class="jk">"rationale"</span>: <span class="js">"NVDA broke 20-bar high on 2.4× volume.<br>&nbsp;&nbsp;VWAP reclaim confirmed. RSI 34→52."</span>,<br>
+<span class="jk">"signal_type"</span>: <span class="js">"MOMENTUM_BREAKOUT"</span>
+      </div>
+      <div class="g2">
+        <div class="card"><div class="stat-val">256</div><div class="stat-label">Max Output Tokens</div><div class="stat-sub">Tight budget → ultra-low cost</div></div>
+        <div class="card"><div class="stat-val">50%</div><div class="stat-label">Min Confidence Gate</div><div class="stat-sub">Below threshold → skipped</div></div>
+      </div>
     </div>
-  </div>
-
-  <div class="grid-2 mt-md">
-    <div class="col">
+    <div style="display:flex; flex-direction:column; gap:14px;">
       <div class="card">
-        <h3 class="gold">Curated 24-Symbol Watchlist</h3>
-        <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:12px;">
-          <div><span class="tag tag-blue">AI Chips</span> <span style="font-size:12px; color:var(--muted);">NVDA · AMD · ASML · TSM · AVGO · INTC</span></div>
-          <div style="width:100%;"></div>
-          <div><span class="tag tag-indigo">AI Software</span> <span style="font-size:12px; color:var(--muted);">MSFT · GOOGL · PLTR</span></div>
-          <div style="width:100%;"></div>
-          <div><span class="tag tag-green">Green Energy</span> <span style="font-size:12px; color:var(--muted);">ENPH · FSLR · NEE</span></div>
-          <div style="width:100%;"></div>
-          <div><span class="tag tag-blue">MedTech</span> <span style="font-size:12px; color:var(--muted);">NVO · LLY · DXCM · PODD</span></div>
-          <div style="width:100%;"></div>
-          <div><span class="tag tag-red">Biotech</span> <span style="font-size:12px; color:var(--muted);">MANE · RXRX</span></div>
-          <div style="width:100%;"></div>
-          <div><span class="tag tag-indigo">Drone &amp; Defence</span> <span style="font-size:12px; color:var(--muted);">KTOS · AVAV</span></div>
-          <div style="width:100%;"></div>
-          <div><span class="tag tag-gold">Core</span> <span style="font-size:12px; color:var(--muted);">TSLA · AAPL</span></div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:10px; text-transform:uppercase; letter-spacing:1px;">Signal Types</div>
+        <div class="pills">
+          <span class="pill pill-gold">MOMENTUM_BREAKOUT</span>
+          <span class="pill pill-gold">RSI_OVERSOLD</span>
+          <span class="pill pill-green">VWAP_RECLAIM</span>
+          <span class="pill pill-green">EMA_CROSSOVER</span>
+          <span class="pill pill-blue">RESEARCH_CATALYST</span>
+          <span class="pill pill-blue">EARNINGS_PLAY</span>
+          <span class="pill">SECTOR_ROTATION</span>
+          <span class="pill">HOLD</span>
+          <span class="pill pill-red">SELL_SIGNAL</span>
         </div>
       </div>
-      <div class="card card-blue" style="margin-top:0;">
-        <h3>Dynamic Universe Expansion</h3>
-        <p style="font-size:14px; margin-top:8px;">A real-time market scanner detects unusual price/volume activity across the broader market and promotes high-conviction discoveries into the active trading pool.</p>
-      </div>
-    </div>
-    <div class="col">
       <div class="card">
-        <h3>Trading Strategies</h3>
-        <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-          <li><strong style="color:var(--text);">Momentum Riding</strong> — RSI &gt; 60, price above EMA-21, MACD positive</li>
-          <li><strong style="color:var(--text);">Mean Reversion</strong> — RSI &lt; 40, price near lower Bollinger Band, elevated volume</li>
-          <li><strong style="color:var(--text);">Catalyst-Driven</strong> — Act on earnings beats, FDA approvals, insider buying</li>
-          <li><strong style="color:var(--text);">Pre-Breakout Entry</strong> — Accumulation detection before the price move</li>
-          <li><strong style="color:var(--text);">Opportunity Rebalance</strong> — Replace weakest position with highest conviction signal</li>
-        </ul>
-      </div>
-      <div class="card card-gold" style="margin-top:0;">
-        <h3>Earnings-Aware Logic</h3>
-        <ul class="bullet-list" style="margin-top:8px; font-size:14px;">
-          <li>No new positions within 48 hours of earnings</li>
-          <li>Post-beat momentum protected for 7 days (≥10% EPS surprise)</li>
-          <li>Biotech catalysts protected for 7 days pre-event</li>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:10px; text-transform:uppercase; letter-spacing:1px;">AI Model Stack</div>
+        <ul class="feat-list">
+          <li><span class="fi">🤖</span><span><strong>claude-haiku-4-5-20251001</strong> — primary decision model, ultra-low latency</span></li>
+          <li><span class="fi">💾</span><span><strong>Prompt caching</strong> — system prompt cached via <code style="font-size:10px; background:#1a2235; padding:1px 5px; border-radius:3px;">cache_control: ephemeral</code></span></li>
+          <li><span class="fi">📝</span><span><strong>Structured output</strong> — JSON enforced via tool-use schema, no free-form parsing</span></li>
+          <li><span class="fi">📚</span><span><strong>Research context</strong> — 14-monitor digest injected per symbol call</span></li>
         </ul>
       </div>
     </div>
   </div>
-</div>
+</section>
 
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 5 — RESEARCH AGENT
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s5">
-  <div class="slide-label">Agent 2 of 2</div>
-  <h2>The <span class="gold">Research Agent</span> — Deep Intelligence, Continuously Updated</h2>
-  <p style="margin-top:8px;">Runs every 15 minutes. Synthesises 8 independent data streams into a single conviction score per symbol — the information advantage that drives alpha.</p>
+<!-- ═══════════════════════════════════════
+     S7 — RESEARCH PIPELINE
+═══════════════════════════════════════ -->
+<section class="slide" id="s7">
+  <div class="slide-label">Intelligence Layer</div>
+  <div class="slide-title">14-Monitor <span class="gold">Research Pipeline</span></div>
+  <div class="slide-sub">Continuous data ingestion feeds every AI decision with live context</div>
 
-  <div class="grid-2 mt-md">
-    <div class="col">
-      <table>
-        <thead>
-          <tr>
-            <th>Data Source</th>
-            <th>Signal Type</th>
-            <th>Edge</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><strong style="color:var(--text);">SEC EDGAR 8-K</strong></td>
-            <td>Corporate events</td>
-            <td><span class="tag tag-gold">Catalyst</span></td>
-          </tr>
-          <tr>
-            <td><strong style="color:var(--text);">SEC Form 4</strong></td>
-            <td>Insider transactions</td>
-            <td><span class="tag tag-green">Directional</span></td>
-          </tr>
-          <tr>
-            <td><strong style="color:var(--text);">SEC 13-D/F/G</strong></td>
-            <td>Institutional moves</td>
-            <td><span class="tag tag-blue">Positioning</span></td>
-          </tr>
-          <tr>
-            <td><strong style="color:var(--text);">Options Chain (Yahoo)</strong></td>
-            <td>IV rank spikes</td>
-            <td><span class="tag tag-indigo">Volatility</span></td>
-          </tr>
-          <tr>
-            <td><strong style="color:var(--text);">Earnings Calendar</strong></td>
-            <td>EPS beats/misses</td>
-            <td><span class="tag tag-gold">Momentum</span></td>
-          </tr>
-          <tr>
-            <td><strong style="color:var(--text);">BioPharmCatalyst</strong></td>
-            <td>FDA / PDUFA dates</td>
-            <td><span class="tag tag-red">Biotech</span></td>
-          </tr>
-          <tr>
-            <td><strong style="color:var(--text);">Market Scanner</strong></td>
-            <td>Unusual price/volume</td>
-            <td><span class="tag tag-green">Discovery</span></td>
-          </tr>
-          <tr>
-            <td><strong style="color:var(--text);">Massive.com</strong></td>
-            <td>Exchange-grade technicals</td>
-            <td><span class="tag tag-blue">Validation</span></td>
-          </tr>
-        </tbody>
-      </table>
+  <div class="col2" style="align-items:center; gap:36px;">
+    <div class="chart-panel" style="height:360px; align-items:center; justify-content:center;">
+      <svg id="radial-chart" width="320" height="320"></svg>
     </div>
-    <div class="col">
-      <div class="card card-gold">
-        <h3>Research Output per Symbol</h3>
-        <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-          <li><strong style="color:var(--text);">Sentiment</strong> — BULLISH / BEARISH / NEUTRAL</li>
-          <li><strong style="color:var(--text);">Conviction Score</strong> — 0.0 to 1.0 (must exceed 0.55 to trade)</li>
-          <li><strong style="color:var(--text);">Recommended Action</strong> — BUY / SELL / HOLD</li>
-          <li><strong style="color:var(--text);">Key Catalyst Summary</strong> — Plain-language rationale</li>
-          <li><strong style="color:var(--text);">Risk Factors</strong> — What could invalidate the thesis</li>
-          <li><strong style="color:var(--text);">Sources Used</strong> — Full audit trail of data consumed</li>
-          <li><strong style="color:var(--text);">Signal TTL</strong> — 4 hours; stale signals auto-expire</li>
-        </ul>
-      </div>
-      <div class="card card-green" style="margin-top:0;">
-        <h3>Intelligent Caching</h3>
-        <p style="font-size:14px; margin-top:8px;">Earnings dates cached 6 hours. Insider transactions cached 4 hours. Institutional filings cached 95 days (one quarter cycle). Prevents redundant API calls while keeping signals fresh.</p>
-      </div>
-      <div class="card" style="display:flex; gap:20px; margin-top:0;">
-        <div style="text-align:center; flex:1;">
-          <div style="font-size:24px; font-weight:700; color:var(--gold);">42+</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Symbols in research universe</div>
+    <div style="display:flex; flex-direction:column; gap:12px;">
+      <div class="g2" style="gap:10px;">
+        <div class="card" style="padding:14px; border-left:3px solid var(--blue);">
+          <div style="font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--blue); margin-bottom:5px;">Market Data (5)</div>
+          <div style="font-size:13px; color:var(--muted);">Price · Volume · RSI · VWAP · EMA-21</div>
         </div>
-        <div style="text-align:center; flex:1;">
-          <div style="font-size:24px; font-weight:700; color:var(--green);">15 min</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Research refresh cycle</div>
+        <div class="card" style="padding:14px; border-left:3px solid var(--gold);">
+          <div style="font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--gold); margin-bottom:5px;">Fundamental (4)</div>
+          <div style="font-size:13px; color:var(--muted);">Earnings · Analyst · Insider · SEC</div>
+        </div>
+        <div class="card" style="padding:14px; border-left:3px solid var(--green);">
+          <div style="font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--green); margin-bottom:5px;">Event-Driven (5)</div>
+          <div style="font-size:13px; color:var(--muted);">News · IPO · Clinical · Momentum · Sector</div>
+        </div>
+        <div class="card" style="padding:14px; border-left:3px solid var(--purple);">
+          <div style="font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--purple); margin-bottom:5px;">Cadence</div>
+          <div style="font-size:13px; color:var(--muted);">Deep: 30 min · Signal sync: 60s</div>
         </div>
       </div>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 6 — AI DECISION ENGINE
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s6">
-  <div class="slide-label">The Brain</div>
-  <h2>Claude AI as the <span class="gold">Decision Engine</span></h2>
-  <p style="margin-top:8px;">Every trade is approved by Claude — not a rule engine, not a simple threshold. A large language model reading the full market picture and making a reasoned call.</p>
-
-  <div class="grid-2 mt-md">
-    <div class="col">
-      <div class="card card-gold">
-        <h3>What Claude Receives per Symbol</h3>
-        <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-          <li>Live price, 1-hour change %, RSI, MACD, EMA cross status</li>
-          <li>Bollinger Band position, ATR (volatility), volume ratio vs 20-day avg</li>
-          <li>Portfolio equity, cash, buying power, existing position details</li>
-          <li>Sector classification and structural tailwind bias</li>
-          <li>Research signal: sentiment, conviction score, key catalyst summary</li>
-          <li>Upcoming earnings / FDA catalyst within 7 days</li>
-          <li>Recent EPS beat or miss percentage</li>
-        </ul>
-      </div>
-      <div class="card" style="margin-top:0;">
-        <h3>Claude's Structured Response</h3>
-        <pre style="font-size:12px; color:var(--green); background:var(--bg); padding:12px; border-radius:6px; margin-top:10px; overflow:hidden;">{
-  "symbol":    "NVDA",
-  "action":    "BUY",
-  "confidence": 0.82,
-  "rationale": "Strong momentum, RSI 64, research BULLISH on AI spend cycle",
-  "suggested_position_pct": 0.05,
-  "suggested_stop_loss_pct": 0.05,
-  "suggested_take_profit_pct": 0.15,
-  "urgency":   "HIGH"
-}</pre>
-      </div>
-    </div>
-    <div class="col">
-      <div class="card card-blue">
-        <h3>Sector Bias Intelligence</h3>
-        <p style="font-size:14px; margin-top:8px;">Claude applies a <strong style="color:var(--gold);">+5% confidence boost</strong> to structurally favoured sectors when signals are borderline — reflecting long-term secular tailwinds.</p>
-        <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:12px;">
-          <span class="tag tag-blue">AI &amp; Semiconductors</span>
-          <span class="tag tag-indigo">AI Software Platforms</span>
-          <span class="tag tag-green">Green Energy</span>
-          <span class="tag tag-blue">MedTech / GLP-1</span>
-          <span class="tag tag-red">Biotech / Clinical Stage</span>
-          <span class="tag tag-indigo">Drone &amp; Defence</span>
-        </div>
-      </div>
-      <div class="card card-green" style="margin-top:0;">
-        <h3>Decision Gate Rules</h3>
-        <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-          <li>Confidence must reach <strong style="color:var(--gold);">65%</strong> minimum to act — HOLD otherwise</li>
-          <li>Confidence capped at 95% to prevent overconfidence</li>
-          <li>HOLD is the most common output — disciplined restraint</li>
-          <li>HIGH urgency signals trigger immediate push notifications</li>
-          <li>All decisions forwarded to Risk Manager for final approval</li>
-        </ul>
-      </div>
-      <div class="card card-gold" style="margin-top:0;">
-        <h3>Cost-Optimised Model Selection</h3>
-        <p style="font-size:14px; margin-top:8px;">Claude Haiku 4.5 — chosen for sub-500ms latency and cost efficiency. Processes 24+ symbols per 5-minute cycle at approximately <strong style="color:var(--gold);">$30–40/month</strong> in API costs.</p>
+      <div class="card">
+        <div style="font-size:11px; color:var(--muted); margin-bottom:7px; text-transform:uppercase; letter-spacing:1px;">Research Store</div>
+        <div style="font-size:14px; line-height:1.6;">All monitor outputs persist in <code style="background:#1a2235; padding:1px 6px; border-radius:3px; font-size:11px;">research_store</code> (SQLite/PostgreSQL). Each AI decision receives a formatted digest of the latest signals for its symbol — giving Claude institutional-grade context without extra API calls.</div>
       </div>
     </div>
   </div>
-</div>
+</section>
 
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 7 — MULTI-SIGNAL INTELLIGENCE
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s7">
-  <div class="slide-label">Information Edge</div>
-  <h2><span class="gold">Multi-Signal Intelligence</span> — Where the Alpha Lives</h2>
-  <p style="margin-top:8px;">No single signal wins consistently. The system fuses four independent signal families into one coherent view — a capability beyond any individual trader.</p>
+<!-- ═══════════════════════════════════════
+     S8 — RISK GOVERNANCE
+═══════════════════════════════════════ -->
+<section class="slide" id="s8">
+  <div class="slide-label">Risk Management</div>
+  <div class="slide-title">Eight-Layer <span class="gold">Risk Governance</span></div>
+  <div class="slide-sub">Every trade passes sequential guardrails before execution</div>
 
-  <div class="grid-4 mt-md">
-    <div class="card" style="border-top: 3px solid var(--gold);">
-      <h3 class="gold" style="font-size:16px;">Technical Signals</h3>
-      <ul class="bullet-list" style="margin-top:10px; font-size:13px;">
-        <li>RSI(14) — momentum</li>
-        <li>MACD histogram crosses</li>
-        <li>EMA 9/21/50 trend stack</li>
-        <li>Bollinger Band position</li>
-        <li>ATR volatility sizing</li>
-        <li>Volume ratio vs 20-day avg</li>
+  <div class="col2" style="gap:28px; align-items:start;">
+    <div>
+      <div id="risk-steps">
+        <div class="risk-step"><div class="rs-num">1</div><div class="rs-label">Kill Switch</div><div class="rs-val">Manual override</div><div class="rs-check">✅</div></div>
+        <div class="risk-step"><div class="rs-num">2</div><div class="rs-label">Daily Drawdown</div><div class="rs-val">&gt;4% → halt all</div><div class="rs-check">✅</div></div>
+        <div class="risk-step"><div class="rs-num">3</div><div class="rs-label">Max Open Positions</div><div class="rs-val">5 maximum</div><div class="rs-check">✅</div></div>
+        <div class="risk-step"><div class="rs-num">4</div><div class="rs-label">Position Size Cap</div><div class="rs-val">10% (15% high-conv.)</div><div class="rs-check">✅</div></div>
+        <div class="risk-step"><div class="rs-num">5</div><div class="rs-label">High-Conviction Override</div><div class="rs-val">≥0.80 confidence</div><div class="rs-check">✅</div></div>
+        <div class="risk-step"><div class="rs-num">6</div><div class="rs-label">T+2 Settlement Check</div><div class="rs-val">PDT same-day guard</div><div class="rs-check">✅</div></div>
+        <div class="risk-step"><div class="rs-num">7</div><div class="rs-label">Buying Power Reserve</div><div class="rs-val">$30 buffer</div><div class="rs-check">✅</div></div>
+        <div class="risk-step"><div class="rs-num">8</div><div class="rs-label">Min Trade Size</div><div class="rs-val">$1 minimum</div><div class="rs-check">✅</div></div>
+      </div>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div class="g2">
+        <div class="card"><div class="stat-val red">4%</div><div class="stat-label">Drawdown Kill-Switch</div><div class="stat-sub">Daily portfolio loss ceiling</div></div>
+        <div class="card"><div class="stat-val">5</div><div class="stat-label">Max Positions</div><div class="stat-sub">Concurrent open trades</div></div>
+        <div class="card"><div class="stat-val">10%</div><div class="stat-label">Position Cap</div><div class="stat-sub">15% at ≥0.80 confidence</div></div>
+        <div class="card"><div class="stat-val gold">T+2</div><div class="stat-label">Settlement Tracking</div><div class="stat-sub">PDT same-day-buy guard</div></div>
+      </div>
+      <div class="card">
+        <div style="font-size:11px; color:var(--muted); margin-bottom:7px; text-transform:uppercase; letter-spacing:1px;">Position Lock</div>
+        <div style="font-size:14px; line-height:1.6;">Dashboard 🔒 toggle blocks the agent from selling a held position — DB-persisted in <code style="background:#1a2235; padding:1px 5px; border-radius:3px; font-size:11px;">symbol_locks</code> table, survives agent restarts. Useful for tax windows or manual holds.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     S9 — WEBSOCKET HOT PATH
+═══════════════════════════════════════ -->
+<section class="slide" id="s9">
+  <div class="slide-label">Real-Time Engine</div>
+  <div class="slide-title">WebSocket <span class="gold">Hot Path</span></div>
+  <div class="slide-sub">Bar-close events trigger AI decisions in under 5 seconds</div>
+
+  <div class="chart-panel" style="flex:1; min-height:0; margin-bottom:16px;">
+    <div class="chart-title">Signal Flow — Bar Close → Risk → Execute</div>
+    <svg id="flow-chart" width="100%" height="200"></svg>
+  </div>
+
+  <div class="g4">
+    <div class="card"><div class="stat-val green">&lt;5s</div><div class="stat-label">End-to-End Latency</div><div class="stat-sub">Bar close → order</div></div>
+    <div class="card"><div class="stat-val">10</div><div class="stat-label">Events per Drain</div><div class="stat-sub">Batch cap per flush</div></div>
+    <div class="card"><div class="stat-val">6</div><div class="stat-label">Hot Criteria</div><div class="stat-sub">Volume, RSI, VWAP, EMA…</div></div>
+    <div class="card"><div class="stat-val gold">✓</div><div class="stat-label">Stale-Event Pruning</div><div class="stat-sub">Old events purged first</div></div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     S10 — LIVE DASHBOARD
+═══════════════════════════════════════ -->
+<section class="slide" id="s10">
+  <div class="slide-label">Monitoring</div>
+  <div class="slide-title">Live <span class="gold">Dashboard</span></div>
+  <div class="slide-sub">Three-tab Streamlit interface — Portfolio · Signals · Costs</div>
+
+  <div class="col3">
+    <div class="chart-panel">
+      <div class="chart-title">📊 Portfolio Tab</div>
+      <ul class="feat-list" style="margin-top:6px;">
+        <li><span class="fi">💼</span><span>Real-time P&amp;L per position with equity curve</span></li>
+        <li><span class="fi">🔒</span><span>Per-position lock toggle (🔒/🔓) — DB-persisted</span></li>
+        <li><span class="fi">📋</span><span>Full execution log: symbol, side, notional, timestamp</span></li>
+        <li><span class="fi">📈</span><span>Drawdown &amp; buying power metrics</span></li>
+        <li><span class="fi">🛑</span><span>Manual close button with confirmation flow</span></li>
       </ul>
     </div>
-    <div class="card" style="border-top: 3px solid var(--green);">
-      <h3 class="green" style="font-size:16px;">Fundamental Signals</h3>
-      <ul class="bullet-list" style="margin-top:10px; font-size:13px;">
-        <li>EPS beat / miss %</li>
-        <li>Revenue surprise magnitude</li>
-        <li>Earnings calendar proximity</li>
-        <li>FDA / PDUFA event dates</li>
-        <li>Clinical trial readouts</li>
-        <li>Activist investor filings</li>
+    <div class="chart-panel">
+      <div class="chart-title">🔍 Signals Tab</div>
+      <ul class="feat-list" style="margin-top:6px;">
+        <li><span class="fi">📡</span><span>Recent AI decisions with confidence scores</span></li>
+        <li><span class="fi">🏷️</span><span>Signal type badges (BUY / SELL / HOLD)</span></li>
+        <li><span class="fi">💬</span><span>Full rationale text per decision</span></li>
+        <li><span class="fi">⏱️</span><span>Timestamp, approval status, urgency</span></li>
+        <li><span class="fi">🔎</span><span>Filter by symbol or action type</span></li>
       </ul>
     </div>
-    <div class="card" style="border-top: 3px solid var(--blue);">
-      <h3 class="blue" style="font-size:16px;">Insider Signals</h3>
-      <ul class="bullet-list" style="margin-top:10px; font-size:13px;">
-        <li>SEC Form 4 insider buys</li>
-        <li>CEO / CFO transactions &gt;$100K</li>
-        <li>13-D activist positioning</li>
-        <li>13-F institutional changes</li>
-        <li>Director open-market buys</li>
-        <li>Cluster insider buying</li>
-      </ul>
-    </div>
-    <div class="card" style="border-top: 3px solid var(--indigo);">
-      <h3 style="color:var(--indigo); font-size:16px;">Volatility Signals</h3>
-      <ul class="bullet-list" style="margin-top:10px; font-size:13px;">
-        <li>Options IV rank spikes</li>
-        <li>Bollinger Band squeeze</li>
-        <li>Volume accumulation pattern</li>
-        <li>RSI inflection turns</li>
-        <li>52-week low + insider buy</li>
-        <li>Pre-breakout positioning</li>
+    <div class="chart-panel">
+      <div class="chart-title">💰 Costs Tab</div>
+      <ul class="feat-list" style="margin-top:6px;">
+        <li><span class="fi">💵</span><span>Total AI cost today, this week, all-time</span></li>
+        <li><span class="fi">📊</span><span>Cost per agent breakdown</span></li>
+        <li><span class="fi">🔢</span><span>Token counts: input, output, cache creation, cache read</span></li>
+        <li><span class="fi">💡</span><span>Cache savings estimate vs uncached</span></li>
+        <li><span class="fi">📉</span><span>Cost-per-decision trend</span></li>
       </ul>
     </div>
   </div>
+</section>
 
-  <div class="card card-gold mt-md">
-    <div style="display:flex; gap:32px; align-items:center;">
-      <div style="flex-shrink:0; font-size:36px;">🎯</div>
-      <div>
-        <h3>Pre-Breakout Detection — The Highest-Value Entry</h3>
-        <p style="font-size:15px; margin-top:6px;">The breakout screener detects institutional accumulation <em>before</em> price moves: flat price with 1.5–2× average volume, Bollinger squeeze (lowest BB width in 20 bars), RSI inflection, or a 52-week-low combined with insider buying. These are the conditions that precede the largest moves — and this system enters before the crowd notices.</p>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 8 — RISK GOVERNANCE
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s8">
-  <div class="slide-label">Risk Governance</div>
-  <h2>Enterprise-Grade <span class="gold">Risk Framework</span></h2>
-  <p style="margin-top:8px;">Capital preservation is non-negotiable. Every guardrail is hard-coded — the AI cannot override any risk control, regardless of its confidence level.</p>
-
-  <div class="grid-2 mt-md">
-    <div class="col">
-      <table>
-        <thead>
-          <tr><th>Control</th><th>Threshold</th><th>Enforcement</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Minimum trade confidence</td>
-            <td><strong style="color:var(--gold);">65%</strong></td>
-            <td>Decision rejected below threshold</td>
-          </tr>
-          <tr>
-            <td>Daily drawdown kill switch</td>
-            <td><strong style="color:var(--red);">2% of equity</strong></td>
-            <td>All trading halts; manual reset required</td>
-          </tr>
-          <tr>
-            <td>Stop-loss per position</td>
-            <td><strong style="color:var(--red);">5%</strong></td>
-            <td>Bracket order floor placed at execution</td>
-          </tr>
-          <tr>
-            <td>Take-profit per position</td>
-            <td><strong style="color:var(--green);">15%</strong></td>
-            <td>Bracket order ceiling placed at execution</td>
-          </tr>
-          <tr>
-            <td>Max position size</td>
-            <td><strong style="color:var(--gold);">2% of portfolio</strong></td>
-            <td>Auto-scaled down if buying power insufficient</td>
-          </tr>
-          <tr>
-            <td>Max concurrent positions</td>
-            <td><strong style="color:var(--gold);">15</strong></td>
-            <td>New buys blocked unless rebalance triggered</td>
-          </tr>
-          <tr>
-            <td>Minimum settled cash reserve</td>
-            <td><strong style="color:var(--blue);">$30</strong></td>
-            <td>T+2 settlement protection</td>
-          </tr>
-          <tr>
-            <td>PDT rule enforcement</td>
-            <td>3 round trips / 5 days</td>
-            <td>Sell blocked if PDT limit near breach</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="col">
-      <div class="card card-red">
-        <h3 style="color:var(--red);">Kill Switch Architecture</h3>
-        <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-          <li>Daily equity loss reaches 2% → <strong style="color:var(--red);">Kill switch activates automatically</strong></li>
-          <li>Every subsequent trade request returns "Kill switch active"</li>
-          <li>Push notification sent immediately via ntfy.sh</li>
-          <li>Agent continues running — only trading halted</li>
-          <li>Manual operator confirmation required to reset</li>
-          <li>Every activation is logged with timestamp and reason</li>
-        </ul>
-      </div>
-      <div class="card card-gold" style="margin-top:0;">
-        <h3>Opportunity-Cost Selling Rules</h3>
-        <p style="font-size:14px; margin-top:8px;">When the system wants to add a high-conviction position but the portfolio is full (15 positions), it evaluates the weakest holding. It will <strong>never</strong> sell:</p>
-        <ul class="bullet-list" style="margin-top:8px; font-size:14px;">
-          <li>A winner with &gt;10% unrealised gain</li>
-          <li>A position within 7 days of a strong earnings beat</li>
-          <li>A position with BULLISH research conviction &gt;70%</li>
-        </ul>
-        <p style="font-size:14px; margin-top:8px;">Only proceeds if new opportunity has a <strong style="color:var(--gold);">15%+ confidence gap</strong> over the weakest position.</p>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 9 — PORTFOLIO STRATEGY
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s9">
-  <div class="slide-label">Portfolio Management</div>
-  <h2>Dynamic Portfolio Strategy for <span class="gold">Continuous Compounding</span></h2>
-  <p style="margin-top:8px;">The portfolio is never static. It continuously gravitates toward the highest-conviction opportunities as new signals emerge throughout the trading day.</p>
-
-  <div class="grid-3 mt-md">
-    <div class="card card-gold">
-      <div style="font-size:32px; margin-bottom:10px;">📐</div>
-      <h3>Position Sizing</h3>
-      <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-        <li>2% of portfolio equity per symbol maximum</li>
-        <li>Up to 15 simultaneous positions</li>
-        <li>Auto-scaled if buying power is constrained</li>
-        <li>Notional trading — no share calculation errors</li>
-        <li>Always maintains $30 settled cash reserve</li>
-      </ul>
-    </div>
-    <div class="card card-blue">
-      <div style="font-size:32px; margin-bottom:10px;">⚖️</div>
-      <h3>Dynamic Rebalancing</h3>
-      <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-        <li>Portfolio bias toward highest-conviction ideas</li>
-        <li>Weakest position scored: P&amp;L + research + days held</li>
-        <li>Only rebalances if confidence gap exceeds 15%</li>
-        <li>Earnings-aware — post-beat momentum protected</li>
-        <li>Research BULLISH conviction blocks forced exit</li>
-      </ul>
-    </div>
-    <div class="card card-green">
-      <div style="font-size:32px; margin-bottom:10px;">🔄</div>
-      <h3>Trade Lifecycle</h3>
-      <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-        <li>Entry: Market order with bracket placed simultaneously</li>
-        <li>Take-profit: Automatic at +15% (hard ceiling)</li>
-        <li>Stop-loss: Automatic at -5% (hard floor)</li>
-        <li>Re-evaluation: Every 5-minute cycle on all positions</li>
-        <li>Exit: AI can sell early on deteriorating research signal</li>
-      </ul>
-    </div>
-  </div>
-
-  <div class="grid-2 mt-md">
-    <div class="card" style="display:flex; align-items:center; gap:24px;">
-      <div style="font-size:40px; flex-shrink:0;">🌙</div>
-      <div>
-        <h3>24/5 Market Coverage</h3>
-        <p style="font-size:14px; margin-top:6px;">The system operates throughout all NYSE trading hours (09:30–16:00 ET, Mon–Fri). Research agent runs 24/7, pre-loading the next session's conviction signals overnight so the trading agent is fully informed at open.</p>
-      </div>
-    </div>
-    <div class="card" style="display:flex; align-items:center; gap:24px;">
-      <div style="font-size:40px; flex-shrink:0;">📱</div>
-      <div>
-        <h3>Remote Operator Control</h3>
-        <p style="font-size:14px; margin-top:6px;">Full system control via ntfy.sh push notifications — start, stop, status, kill switch reset. Operator can manage the entire system from a smartphone with no server access required.</p>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 10 — DATA SOURCES & COST
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s10">
-  <div class="slide-label">Economics</div>
-  <h2>Institutional Intelligence at <span class="gold">Retail Cost</span></h2>
-  <p style="margin-top:8px;">The entire data stack is either free or minimal-cost. The system achieves the breadth of a professional trading desk at a fraction of the price.</p>
-
-  <div class="grid-2 mt-md">
-    <table>
-      <thead>
-        <tr><th>Data Source</th><th>Data Type</th><th>Monthly Cost</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><strong style="color:var(--text);">Alpaca Markets</strong></td>
-          <td>Real-time OHLCV, execution, account</td>
-          <td><span class="tag tag-green">Free</span></td>
-        </tr>
-        <tr>
-          <td><strong style="color:var(--text);">SEC EDGAR</strong></td>
-          <td>8-K, Form 4, 13-D/F/G filings</td>
-          <td><span class="tag tag-green">Free</span></td>
-        </tr>
-        <tr>
-          <td><strong style="color:var(--text);">Yahoo Finance</strong></td>
-          <td>Options chains, earnings calendar</td>
-          <td><span class="tag tag-green">Free</span></td>
-        </tr>
-        <tr>
-          <td><strong style="color:var(--text);">BioPharmCatalyst</strong></td>
-          <td>FDA / PDUFA event calendar</td>
-          <td><span class="tag tag-green">Free</span></td>
-        </tr>
-        <tr>
-          <td><strong style="color:var(--text);">Massive.com</strong></td>
-          <td>Exchange-grade technical validation</td>
-          <td><span class="tag tag-green">Free tier</span></td>
-        </tr>
-        <tr>
-          <td><strong style="color:var(--text);">Anthropic Claude Haiku</strong></td>
-          <td>AI decision engine + research analysis</td>
-          <td><span class="tag tag-gold">~€28/mo</span></td>
-        </tr>
-        <tr>
-          <td><strong style="color:var(--text);">Hetzner Cloud VM</strong></td>
-          <td>24/7 cloud hosting (Ubuntu)</td>
-          <td><span class="tag tag-gold">€3.29/mo</span></td>
-        </tr>
-        <tr>
-          <td><strong style="color:var(--text);">Supabase PostgreSQL</strong></td>
-          <td>Production database</td>
-          <td><span class="tag tag-green">Free tier</span></td>
-        </tr>
-      </tbody>
-    </table>
-
-    <div class="col">
-      <div class="card card-gold" style="text-align:center; padding: 32px;">
-        <div class="hero-number">~€35</div>
-        <div style="font-size:18px; color:var(--muted); margin-top:8px;">per month, total operational cost</div>
-        <div class="divider" style="margin: 20px auto; max-width:80%;"></div>
-        <p style="font-size:15px;">A professional Bloomberg terminal costs <strong style="color:var(--text);">$2,000/month</strong>. This system delivers comparable market intelligence at <strong style="color:var(--gold);">1.75% of that cost</strong>.</p>
-      </div>
-      <div class="card card-green" style="margin-top:0;">
-        <h3>Cost Efficiency at Scale</h3>
-        <ul class="bullet-list" style="margin-top:10px; font-size:14px;">
-          <li>Intelligent 4–6 hour TTL caches reduce API calls by ~80%</li>
-          <li>Haiku model chosen specifically for cost at high call volume</li>
-          <li>Upgrade path: Claude Opus 4.7 for higher-stakes decisions</li>
-          <li>Infrastructure scales linearly — add symbols without redesign</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 11 — TECHNOLOGY STACK
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s11">
+<!-- ═══════════════════════════════════════
+     S11 — TECH STACK
+═══════════════════════════════════════ -->
+<section class="slide" id="s11">
   <div class="slide-label">Technology</div>
-  <h2>Production-Grade <span class="gold">Technology Stack</span></h2>
-  <p style="margin-top:8px;">Built on industry-standard open-source components with cloud-native deployment — reliable, scalable, and maintainable.</p>
+  <div class="slide-title">Production <span class="gold">Stack</span></div>
+  <div class="slide-sub">Cloud-native, zero-infra-ops, fully automated deployment</div>
 
-  <div class="grid-3 mt-md">
-    <div class="col">
-      <div class="card card-gold">
-        <h3 style="font-size:15px; text-transform:uppercase; letter-spacing:1px; color:var(--gold);">Intelligence Layer</h3>
-        <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-          <li><strong style="color:var(--text);">Claude Haiku 4.5</strong> — Decision engine &amp; research analysis</li>
-          <li><strong style="color:var(--text);">pandas / pandas-ta</strong> — Technical indicator computation</li>
-          <li><strong style="color:var(--text);">Python 3.12</strong> — Core runtime</li>
-        </ul>
+  <div class="col2" style="align-items:center; gap:36px;">
+    <div class="chart-panel" style="height:360px;">
+      <div class="chart-title">Tech Stack Treemap</div>
+      <svg id="treemap-chart" width="100%" height="300"></svg>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:12px;">
+      <div class="g2" style="gap:10px;">
+        <div class="card" style="padding:14px; border-left:3px solid var(--gold);">
+          <div style="font-size:10px; color:var(--gold); text-transform:uppercase; letter-spacing:1px; margin-bottom:5px;">Intelligence</div>
+          <div style="font-size:12px; color:var(--muted);">Claude Haiku · Anthropic SDK · pandas · TA-Lib</div>
+        </div>
+        <div class="card" style="padding:14px; border-left:3px solid var(--blue);">
+          <div style="font-size:10px; color:var(--blue); text-transform:uppercase; letter-spacing:1px; margin-bottom:5px;">Connectivity</div>
+          <div style="font-size:12px; color:var(--muted);">Alpaca REST · Alpaca WebSocket · Coinbase</div>
+        </div>
+        <div class="card" style="padding:14px; border-left:3px solid var(--green);">
+          <div style="font-size:10px; color:var(--green); text-transform:uppercase; letter-spacing:1px; margin-bottom:5px;">Storage</div>
+          <div style="font-size:12px; color:var(--muted);">PostgreSQL (cloud) · SQLite · research_store · trade_store</div>
+        </div>
+        <div class="card" style="padding:14px; border-left:3px solid var(--purple);">
+          <div style="font-size:10px; color:var(--purple); text-transform:uppercase; letter-spacing:1px; margin-bottom:5px;">Deployment</div>
+          <div style="font-size:12px; color:var(--muted);">Railway.app · systemd · Streamlit Cloud</div>
+        </div>
       </div>
-      <div class="card" style="margin-top:0;">
-        <h3 style="font-size:15px; text-transform:uppercase; letter-spacing:1px;">Market Connectivity</h3>
-        <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-          <li><strong style="color:var(--text);">Alpaca Markets</strong> — NYSE execution + market data</li>
-          <li><strong style="color:var(--text);">Coinbase Advanced Trade</strong> — Crypto (roadmap)</li>
-          <li><strong style="color:var(--text);">alpaca-py SDK</strong> — Typed API client</li>
-        </ul>
+      <div class="g2" style="gap:10px;">
+        <div class="card"><div class="stat-val">~14k</div><div class="stat-label">Lines of Code</div><div class="stat-sub">50+ modules</div></div>
+        <div class="card"><div class="stat-val green">$0</div><div class="stat-label">Infra Cost</div><div class="stat-sub">Railway free tier</div></div>
       </div>
     </div>
-    <div class="col">
-      <div class="card card-green">
-        <h3 style="font-size:15px; text-transform:uppercase; letter-spacing:1px; color:var(--green);">Data &amp; Storage</h3>
-        <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-          <li><strong style="color:var(--text);">PostgreSQL</strong> — Production trade &amp; research store</li>
-          <li><strong style="color:var(--text);">SQLite</strong> — Local development / lightweight</li>
-          <li><strong style="color:var(--text);">Supabase / Railway</strong> — Managed cloud PostgreSQL</li>
-        </ul>
-      </div>
-      <div class="card" style="margin-top:0;">
-        <h3 style="font-size:15px; text-transform:uppercase; letter-spacing:1px;">Observability</h3>
-        <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-          <li><strong style="color:var(--text);">Streamlit</strong> — Real-time P&amp;L dashboard (1,015 lines)</li>
-          <li><strong style="color:var(--text);">ntfy.sh</strong> — Push notifications (iOS/Android)</li>
-          <li><strong style="color:var(--text);">Rotating file logs</strong> — Structured decision audit trail</li>
-        </ul>
-      </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     S12 — ECONOMICS
+═══════════════════════════════════════ -->
+<section class="slide" id="s12">
+  <div class="slide-label">Economics</div>
+  <div class="slide-title">Data Sources &amp; <span class="gold">AI Economics</span></div>
+  <div class="slide-sub">Ultra-low AI cost via Claude Haiku + prompt caching</div>
+
+  <div class="col2" style="gap:32px; align-items:start;">
+    <div class="chart-panel" style="height:300px;">
+      <div class="chart-title">Estimated Cost per Operation</div>
+      <svg id="cost-chart" width="100%" height="240"></svg>
     </div>
-    <div class="col">
-      <div class="card card-blue">
-        <h3 style="font-size:15px; text-transform:uppercase; letter-spacing:1px; color:var(--blue);">Deployment</h3>
-        <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-          <li><strong style="color:var(--text);">systemd</strong> — Service management with auto-restart</li>
-          <li><strong style="color:var(--text);">Hetzner / AWS / Railway</strong> — Cloud VM options</li>
-          <li><strong style="color:var(--text);">Heroku / Render</strong> — One-click Procfile deploy</li>
-        </ul>
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div class="g2">
+        <div class="card"><div class="stat-val">$0.001</div><div class="stat-label">Cost per Decision</div><div class="stat-sub">With cache hits</div></div>
+        <div class="card"><div class="stat-val green">~80%</div><div class="stat-label">Cache Hit Rate</div><div class="stat-sub">System prompt cached</div></div>
+        <div class="card"><div class="stat-val">$0.80</div><div class="stat-label">Input / 1M tokens</div><div class="stat-sub">Claude Haiku</div></div>
+        <div class="card"><div class="stat-val">$4.00</div><div class="stat-label">Output / 1M tokens</div><div class="stat-sub">256 max output tokens</div></div>
       </div>
-      <div class="card" style="margin-top:0;">
-        <h3 style="font-size:15px; text-transform:uppercase; letter-spacing:1px;">Codebase Scale</h3>
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
-          <div class="stat"><div class="stat-value" style="font-size:22px;">8,600</div><div class="stat-label">Lines of Python</div></div>
-          <div class="stat"><div class="stat-value" style="font-size:22px;">48</div><div class="stat-label">Specialised modules</div></div>
-          <div class="stat"><div class="stat-value" style="font-size:22px;">7</div><div class="stat-label">Architecture layers</div></div>
-          <div class="stat"><div class="stat-value" style="font-size:22px;">3</div><div class="stat-label">Deploy targets</div></div>
+      <div class="card">
+        <div style="font-size:11px; color:var(--muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">Free Data Sources</div>
+        <div class="pills">
+          <span class="pill pill-blue">Alpaca Market Data</span>
+          <span class="pill pill-gold">Yahoo Finance</span>
+          <span class="pill pill-green">SEC EDGAR</span>
+          <span class="pill">Reddit WSB</span>
+          <span class="pill">Finviz</span>
+          <span class="pill pill-blue">ClinicalTrials.gov</span>
+          <span class="pill pill-gold">Polygon.io</span>
         </div>
       </div>
     </div>
   </div>
-</div>
+</section>
 
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 12 — ROADMAP
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s12">
-  <div class="slide-label">Strategic Roadmap</div>
-  <h2>From Paper Trading to <span class="gold">Institutional Capability</span></h2>
-  <p style="margin-top:8px;">A clear, phased path from validated proof-of-concept to a multi-strategy, multi-portfolio wealth management platform.</p>
+<!-- ═══════════════════════════════════════
+     S13 — PERFORMANCE RADAR
+═══════════════════════════════════════ -->
+<section class="slide" id="s13">
+  <div class="slide-label">Performance</div>
+  <div class="slide-title">Capability <span class="gold">Profile</span></div>
+  <div class="slide-sub">AI system vs. manual discretionary trading baseline</div>
 
-  <div class="grid-2 mt-md">
-    <div class="col">
-      <div class="roadmap-item">
-        <div class="roadmap-dot" style="background:rgba(240,180,41,0.2); border: 2px solid var(--gold); color:var(--gold);">1</div>
-        <div class="card card-gold" style="flex:1;">
-          <h3 style="font-size:15px;">Backtesting Engine <span class="tag tag-gold" style="margin-left:8px;">Phase 1</span></h3>
-          <p style="font-size:13px; margin-top:6px;">Replay 12+ months of historical data through the decision engine. Validate strategy performance, Sharpe ratio, and drawdown characteristics before committing live capital.</p>
-        </div>
-      </div>
-      <div class="roadmap-item">
-        <div class="roadmap-dot" style="background:rgba(16,185,129,0.2); border: 2px solid var(--green); color:var(--green);">2</div>
-        <div class="card card-green" style="flex:1;">
-          <h3 style="font-size:15px;">Swing Trading Module <span class="tag tag-green" style="margin-left:8px;">Phase 2</span></h3>
-          <p style="font-size:13px; margin-top:6px;">Add daily and weekly timeframe strategies for higher-conviction multi-day holds. Complement the intraday momentum approach with longer-duration thesis plays.</p>
-        </div>
-      </div>
-      <div class="roadmap-item">
-        <div class="roadmap-dot" style="background:rgba(59,130,246,0.2); border: 2px solid var(--blue); color:var(--blue);">3</div>
-        <div class="card card-blue" style="flex:1;">
-          <h3 style="font-size:15px;">Options Overlay <span class="tag tag-blue" style="margin-left:8px;">Phase 3</span></h3>
-          <p style="font-size:13px; margin-top:6px;">Implement covered call writing on high-conviction long holds and protective puts on volatile biotech positions. Monetise existing holdings and reduce downside risk.</p>
-        </div>
-      </div>
+  <div class="col2" style="align-items:center; gap:36px;">
+    <div class="chart-panel" style="height:360px; align-items:center; justify-content:center;">
+      <svg id="radar-chart" width="320" height="320"></svg>
     </div>
-    <div class="col">
-      <div class="roadmap-item">
-        <div class="roadmap-dot" style="background:rgba(99,102,241,0.2); border: 2px solid var(--indigo); color:var(--indigo);">4</div>
-        <div class="card card-indigo" style="flex:1;">
-          <h3 style="font-size:15px;">ML-Learned Thresholds <span class="tag tag-indigo" style="margin-left:8px;">Phase 4</span></h3>
-          <p style="font-size:13px; margin-top:6px;">Replace static confidence (65%) and sector bias (+5%) with learned decision boundaries trained on the system's own trade history. Adapt to evolving market regimes.</p>
-        </div>
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div style="display:flex; gap:24px; margin-bottom:2px;">
+        <div style="display:flex; align-items:center; gap:8px; font-size:13px;"><div style="width:16px; height:3px; background:var(--gold); border-radius:2px;"></div>AI System</div>
+        <div style="display:flex; align-items:center; gap:8px; font-size:13px;"><div style="width:16px; height:3px; background:#4B5563; border-radius:2px;"></div>Manual Baseline</div>
       </div>
-      <div class="roadmap-item">
-        <div class="roadmap-dot" style="background:rgba(240,180,41,0.2); border: 2px solid var(--gold); color:var(--gold);">5</div>
-        <div class="card card-gold" style="flex:1;">
-          <h3 style="font-size:15px;">Multi-Portfolio Profiles <span class="tag tag-gold" style="margin-left:8px;">Phase 5</span></h3>
-          <p style="font-size:13px; margin-top:6px;">Run separate strategy portfolios simultaneously: Aggressive (higher risk tolerance, smaller stocks), Moderate (core watchlist), Conservative (large-cap dividend stocks). Serve multiple investor profiles.</p>
-        </div>
+      <div class="g2">
+        <div class="card"><div class="stat-val green">24/5</div><div class="stat-label">Market Hours</div><div class="stat-sub">Pre/post market watching</div></div>
+        <div class="card"><div class="stat-val">&lt;5s</div><div class="stat-label">Signal Latency</div><div class="stat-sub">vs. minutes manually</div></div>
+        <div class="card"><div class="stat-val">100%</div><div class="stat-label">Rule Adherence</div><div class="stat-sub">No emotional overrides</div></div>
+        <div class="card"><div class="stat-val">55</div><div class="stat-label">Simultaneous Symbols</div><div class="stat-sub">vs. 5–10 manually</div></div>
       </div>
-      <div class="roadmap-item">
-        <div class="roadmap-dot" style="background:rgba(16,185,129,0.2); border: 2px solid var(--green); color:var(--green);">6</div>
-        <div class="card card-green" style="flex:1;">
-          <h3 style="font-size:15px;">News Sentiment Integration <span class="tag tag-green" style="margin-left:8px;">Phase 6</span></h3>
-          <p style="font-size:13px; margin-top:6px;">Add real-time news and social sentiment scoring (Reddit, Stocktwits, financial press) as an additional conviction dimension in the research pipeline.</p>
-        </div>
+      <div class="card">
+        <div style="font-size:14px; line-height:1.6; color:var(--muted);">System currently trades paper account. Live performance metrics will be tracked once strategy validation targets (win-rate, Sharpe) are confirmed. Focus: hardening and backtesting.</div>
       </div>
     </div>
   </div>
-</div>
+</section>
 
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 13 — PERFORMANCE TRANSPARENCY
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s13">
-  <div class="slide-label">Transparency &amp; Compliance</div>
-  <h2>Complete <span class="gold">Audit Trail</span> — Every Decision on Record</h2>
-  <p style="margin-top:8px;">Every trade decision, approval, and execution is logged to the database. Nothing is opaque — every action can be reviewed, replayed, and analysed.</p>
+<!-- ═══════════════════════════════════════
+     S14 — ROADMAP
+═══════════════════════════════════════ -->
+<section class="slide" id="s14">
+  <div class="slide-label">Roadmap</div>
+  <div class="slide-title">Development <span class="gold">Roadmap</span></div>
+  <div class="slide-sub">Completed phases and near-term milestones</div>
 
-  <div class="grid-3 mt-md">
-    <div class="card card-gold">
-      <h3>Decisions Table</h3>
-      <p style="font-size:13px; color:var(--muted); margin-top:4px;">Every AI decision logged with:</p>
-      <ul class="bullet-list" style="margin-top:10px; font-size:13px;">
-        <li>Timestamp + symbol + action taken</li>
-        <li>Confidence score (0.0–1.0)</li>
-        <li>Full Claude rationale text</li>
-        <li>Urgency level (HIGH/MEDIUM/LOW)</li>
-        <li>Approved or blocked by Risk Manager</li>
-        <li>Approval/rejection reason</li>
-        <li>Notional value of trade</li>
-      </ul>
+  <div class="col2" style="gap:36px; align-items:start;">
+    <div class="tl">
+      <div class="tl-item">
+        <div class="tl-dot tl-done">✓</div>
+        <div class="tl-body"><div class="tl-title">Phase 1 — Core Engine</div><div class="tl-desc">Alpaca REST trading, Claude AI decisions, basic risk guardrails, SQLite storage, single-cadence loop.</div></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot tl-done">✓</div>
+        <div class="tl-body"><div class="tl-title">Phase 2 — Research Layer</div><div class="tl-desc">14-monitor research pipeline, ResearchAgent, research_store, dual-cadence loop, prompt caching.</div></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot tl-done">✓</div>
+        <div class="tl-body"><div class="tl-title">Phase 3 — Real-Time Hot Path</div><div class="tl-desc">WebSocket stream, hot_queue, _is_hot() criteria, 3-cadence loop, stale-event pruning, &lt;5s latency.</div></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot tl-done">✓</div>
+        <div class="tl-body"><div class="tl-title">Phase 4 — Cloud &amp; Dashboard</div><div class="tl-desc">PostgreSQL on Railway.app, 3-tab Streamlit dashboard, API cost tracking, position lock, T+2 settlement guard.</div></div>
+      </div>
     </div>
-    <div class="card card-blue">
-      <h3>Executions Table</h3>
-      <p style="font-size:13px; color:var(--muted); margin-top:4px;">Every order fill logged with:</p>
-      <ul class="bullet-list" style="margin-top:10px; font-size:13px;">
-        <li>Alpaca order ID (immutable reference)</li>
-        <li>Symbol, side (buy/sell), quantity</li>
-        <li>Execution price + notional value</li>
-        <li>Stop-loss price placed</li>
-        <li>Take-profit price placed</li>
-        <li>Timestamp to millisecond</li>
-        <li>Full JSON response from broker</li>
-      </ul>
-    </div>
-    <div class="card card-green">
-      <h3>Research Signals Table</h3>
-      <p style="font-size:13px; color:var(--muted); margin-top:4px;">Every conviction signal stored with:</p>
-      <ul class="bullet-list" style="margin-top:10px; font-size:13px;">
-        <li>Symbol + timestamp + expiry (TTL)</li>
-        <li>Sentiment: BULLISH / BEARISH / NEUTRAL</li>
-        <li>Conviction score (0.0–1.0)</li>
-        <li>Recommended action</li>
-        <li>Key catalysts identified</li>
-        <li>Risk factors flagged</li>
-        <li>Data sources consumed</li>
-      </ul>
+    <div class="tl">
+      <div class="tl-item">
+        <div class="tl-dot tl-active">→</div>
+        <div class="tl-body"><div class="tl-title">Phase 5 — Strategy Validation</div><div class="tl-desc">Paper trading win-rate analysis, Sharpe ratio computation, backtesting harness, sector performance attribution.</div></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot tl-future">○</div>
+        <div class="tl-body"><div class="tl-title">Phase 6 — Live Capital</div><div class="tl-desc">Live account activation, position sizing optimisation, drawdown-adaptive stake sizing, multi-account support.</div></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot tl-future">○</div>
+        <div class="tl-body"><div class="tl-title">Phase 7 — Derivatives</div><div class="tl-desc">Options layer, earnings-strangle strategies, volatility-based hedging, crypto pairs via Coinbase Advanced.</div></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot tl-future">○</div>
+        <div class="tl-body"><div class="tl-title">Phase 8 — Multi-Agent Fleet</div><div class="tl-desc">Parallel agents per sector, ensemble voting, specialisation: momentum vs. mean-reversion vs. catalyst.</div></div>
+      </div>
     </div>
   </div>
+</section>
 
-  <div class="grid-2 mt-md">
-    <div class="card" style="display:flex; align-items:center; gap:20px;">
-      <div style="font-size:36px; flex-shrink:0;">📊</div>
+<!-- ═══════════════════════════════════════
+     S15 — SUMMARY
+═══════════════════════════════════════ -->
+<section class="slide" id="s15">
+  <div class="slide-label">Summary</div>
+  <div class="slide-title">Investment <span class="gold">Case</span></div>
+  <div class="slide-sub">Production-ready autonomous trading system — key facts</div>
+
+  <div class="g4" style="margin-bottom:18px;">
+    <div class="card" style="text-align:center;"><div class="big-num">55</div><div class="stat-label" style="margin-top:8px;">Symbols Monitored</div></div>
+    <div class="card" style="text-align:center;"><div class="big-num green">&lt;5s</div><div class="stat-label" style="margin-top:8px;">Hot Path Latency</div></div>
+    <div class="card" style="text-align:center;"><div class="big-num">14</div><div class="stat-label" style="margin-top:8px;">Data Monitors</div></div>
+    <div class="card" style="text-align:center;"><div class="big-num red">4%</div><div class="stat-label" style="margin-top:8px;">Max Daily Drawdown</div></div>
+  </div>
+  <div class="g4" style="margin-bottom:18px;">
+    <div class="card" style="text-align:center;"><div class="big-num">5</div><div class="stat-label" style="margin-top:8px;">Max Positions</div></div>
+    <div class="card" style="text-align:center;"><div class="big-num gold">50%</div><div class="stat-label" style="margin-top:8px;">Min Confidence Gate</div></div>
+    <div class="card" style="text-align:center;"><div class="big-num">3</div><div class="stat-label" style="margin-top:8px;">Loop Cadences</div></div>
+    <div class="card" style="text-align:center;"><div class="big-num">$0</div><div class="stat-label" style="margin-top:8px;">Cloud Infra Cost</div></div>
+  </div>
+  <div class="card" style="border-color:var(--gold-dim); background:linear-gradient(135deg,#1a1200,var(--surface));">
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:24px;">
       <div>
-        <h3>Real-Time Dashboard</h3>
-        <p style="font-size:14px; margin-top:6px;">1,015-line Streamlit dashboard with live P&amp;L (realised + unrealised), trade history with win rate, decision approval rate, urgency distribution, and symbol performance heatmap. Deployable to Streamlit Cloud for anywhere access.</p>
+        <div style="font-size:11px; color:var(--gold); text-transform:uppercase; letter-spacing:1px; margin-bottom:7px;">What We Built</div>
+        <div style="font-size:13px; line-height:1.6; color:var(--muted);">Fully autonomous AI trading engine with sub-5-second reaction time, institutional-grade risk controls, and a 14-monitor research pipeline providing continuous market intelligence.</div>
       </div>
-    </div>
-    <div class="card" style="display:flex; align-items:center; gap:20px;">
-      <div style="font-size:36px; flex-shrink:0;">⚖️</div>
       <div>
-        <h3>Compliance-Ready Logging</h3>
-        <p style="font-size:14px; margin-top:6px;">Kill switch activations logged with reason and timestamp. PDT rule detection and blocking logged. T+2 settlement tracking prevents cash violations. Every risk decision has a documented justification in the database.</p>
+        <div style="font-size:11px; color:var(--gold); text-transform:uppercase; letter-spacing:1px; margin-bottom:7px;">Competitive Edge</div>
+        <div style="font-size:13px; line-height:1.6; color:var(--muted);">Claude AI synthesises news, technicals, and fundamentals simultaneously. No fixed rules — adaptive reasoning. WebSocket hot path captures moves human traders miss.</div>
+      </div>
+      <div>
+        <div style="font-size:11px; color:var(--gold); text-transform:uppercase; letter-spacing:1px; margin-bottom:7px;">Next Step</div>
+        <div style="font-size:13px; line-height:1.6; color:var(--muted);">Strategy validation via paper-trading backtesting. Once win-rate and Sharpe targets confirmed → live capital activation with progressive position sizing.</div>
       </div>
     </div>
   </div>
-</div>
+</section>
 
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 14 — INVESTMENT CASE
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s14">
-  <div class="slide-label">The Investment Case</div>
-  <h2>Why <span class="gold">Automated, AI-Driven</span> Trading Wins Long-Term</h2>
-  <p style="margin-top:8px;">Wealth creation through equities is a marathon, not a sprint. Consistency, discipline, and information edge compound over time. This system delivers all three.</p>
+</div><!-- #deck -->
 
-  <div class="grid-2 mt-md">
-    <div class="col">
-      <div class="card card-gold">
-        <h3>The Compounding Thesis</h3>
-        <p style="font-size:15px; line-height:1.7; margin-top:10px;">A disciplined system that captures <strong style="color:var(--gold);">15% gains</strong> and cuts losses at <strong style="color:var(--red);">5%</strong> maintains a <strong style="color:var(--text);">3:1 reward-to-risk ratio</strong> on every trade. Applied consistently across 15 positions cycling through high-conviction opportunities, the portfolio is mathematically tilted toward positive expectation.</p>
-        <p style="font-size:15px; line-height:1.7; margin-top:10px;">The research agent's sector focus on AI semiconductors, green energy, and MedTech aligns the portfolio with multi-year structural growth themes — not just short-term momentum.</p>
-      </div>
-      <div class="card" style="display:flex; gap:20px; flex-wrap:wrap; margin-top:0;">
-        <div style="text-align:center; flex:1; min-width:100px;">
-          <div style="font-size:26px; font-weight:700; color:var(--gold);">3:1</div>
-          <div style="font-size:12px; color:var(--muted); margin-top:4px;">Reward / Risk ratio per trade</div>
-        </div>
-        <div style="text-align:center; flex:1; min-width:100px;">
-          <div style="font-size:26px; font-weight:700; color:var(--green);">24/5</div>
-          <div style="font-size:12px; color:var(--muted); margin-top:4px;">Market coverage, no gaps</div>
-        </div>
-        <div style="text-align:center; flex:1; min-width:100px;">
-          <div style="font-size:26px; font-weight:700; color:var(--blue);">0</div>
-          <div style="font-size:12px; color:var(--muted); margin-top:4px;">Emotional bias in decisions</div>
-        </div>
-      </div>
-    </div>
-    <div class="col">
-      <div class="card card-green">
-        <h3>Competitive Advantages</h3>
-        <ul class="bullet-list" style="margin-top:12px; font-size:15px;">
-          <li><strong style="color:var(--text);">Speed</strong> — Evaluates 24+ symbols every 5 minutes; no human can match this</li>
-          <li><strong style="color:var(--text);">Breadth</strong> — 8 simultaneous data sources no individual tracks manually</li>
-          <li><strong style="color:var(--text);">Discipline</strong> — Never breaks risk rules; never holds a loser from pride</li>
-          <li><strong style="color:var(--text);">Pre-Breakout Edge</strong> — Detects accumulation before price moves; enters before the crowd</li>
-          <li><strong style="color:var(--text);">Catalyst Awareness</strong> — Knows earnings dates, FDA events, insider moves in real time</li>
-          <li><strong style="color:var(--text);">Cost Efficiency</strong> — €35/month versus $2,000/month for equivalent professional data</li>
-          <li><strong style="color:var(--text);">Scalability</strong> — Adding capital doesn't add cost; the edge scales with portfolio size</li>
-        </ul>
-      </div>
-      <div class="card card-blue" style="margin-top:0; display:flex; align-items:center; gap:20px;">
-        <div style="font-size:40px; flex-shrink:0;">🎯</div>
-        <div>
-          <h3>Sector Thesis</h3>
-          <p style="font-size:14px; margin-top:6px;">AI chips, green energy, and GLP-1 medtech represent decade-long secular growth. The system's sector bias ensures portfolio alignment with the most powerful macro tailwinds of this era.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════
-     SLIDE 15 — SUMMARY & NEXT STEPS
-═══════════════════════════════════════════════════════ -->
-<div class="slide" id="s15">
-  <div class="slide-label">Summary &amp; Next Steps</div>
-  <h2>A <span class="gold">Production-Ready</span> Autonomous Trading Platform</h2>
-  <p style="margin-top:8px;">The system is built, tested in paper mode, and waiting for the signal to go live. Here is where we stand and what comes next.</p>
-
-  <div class="grid-3 mt-md">
-    <div class="card card-green">
-      <h3 class="green">✅ Built &amp; Operational</h3>
-      <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-        <li>Dual-agent architecture fully implemented</li>
-        <li>8 data sources integrated and caching</li>
-        <li>Claude AI decision engine operational</li>
-        <li>Hard-coded risk guardrails enforced</li>
-        <li>Full database audit trail active</li>
-        <li>Real-time dashboard deployed</li>
-        <li>Cloud infrastructure provisioned</li>
-        <li>Paper trading validated end-to-end</li>
-      </ul>
-    </div>
-    <div class="card card-gold">
-      <h3 class="gold">⚡ Immediate Next Steps</h3>
-      <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-        <li>Run 30-day paper trading performance review</li>
-        <li>Analyse decision log for win rate and confidence calibration</li>
-        <li>Implement basic backtesting on 12-month historical data</li>
-        <li>Set initial live capital allocation (conservative first tranche)</li>
-        <li>Define operator escalation protocols for kill switch events</li>
-        <li>Establish monthly performance review cadence</li>
-      </ul>
-    </div>
-    <div class="card card-blue">
-      <h3 class="blue">🗺 12-Month Roadmap</h3>
-      <ul class="bullet-list" style="margin-top:12px; font-size:14px;">
-        <li>Q1: Backtesting engine + historical validation</li>
-        <li>Q2: Live trading launch (moderate capital)</li>
-        <li>Q2: Swing trading module deployment</li>
-        <li>Q3: Options overlay strategy</li>
-        <li>Q3: ML-learned decision thresholds</li>
-        <li>Q4: Multi-portfolio risk profiles</li>
-        <li>Q4: News sentiment integration</li>
-      </ul>
-    </div>
-  </div>
-
-  <div class="card card-gold mt-md" style="display:flex; gap:32px; align-items:center;">
-    <div style="font-size:48px; flex-shrink:0;">🚀</div>
-    <div style="flex:1;">
-      <h3 style="font-size:20px;">The Bottom Line</h3>
-      <p style="font-size:16px; margin-top:8px; line-height:1.6;">We have built a complete, production-grade autonomous trading platform that operates at machine speed, with institutional data breadth, at retail cost. It applies AI reasoning to every trade, enforces hard risk limits that cannot be overridden, and continuously learns from market signals. The infrastructure is live. The strategy is validated in theory. The next step is capital deployment — and systematic, compounding wealth creation.</p>
-    </div>
-    <div style="text-align:center; flex-shrink:0;">
-      <div style="font-size:36px; font-weight:800; color:var(--gold);">€35</div>
-      <div style="font-size:12px; color:var(--muted);">per month</div>
-      <div style="font-size:11px; color:var(--border); margin-top:4px;">all infrastructure</div>
-    </div>
-  </div>
-</div>
-
-</div><!-- /deck -->
-
-<!-- Navigation -->
-<div class="nav">
-  <button onclick="prev()">← Prev</button>
-  <span class="slide-counter" id="counter">1 / 15</span>
-  <button onclick="next()">Next →</button>
+<div id="nav">
+  <button class="nav-btn" id="btn-prev">← Prev</button>
+  <span id="slide-counter">1 / 15</span>
+  <button class="nav-btn" id="btn-next">Next →</button>
 </div>
 
 <script>
-  const slides = document.querySelectorAll('.slide');
-  const total  = slides.length;
-  let current  = 0;
+// ── NAVIGATION ──────────────────────────────
+const slides = Array.from(document.querySelectorAll('.slide'));
+const total  = slides.length;
+let   cur    = 0;
+const drawn  = new Set();
 
-  function show(n) {
-    slides[current].classList.remove('active');
-    current = (n + total) % total;
-    slides[current].classList.add('active');
-    document.getElementById('counter').textContent = (current + 1) + ' / ' + total;
-    document.getElementById('progress').style.width = ((current + 1) / total * 100) + '%';
-  }
+function goTo(n) {
+  slides[cur].classList.remove('active');
+  cur = Math.max(0, Math.min(total - 1, n));
+  slides[cur].classList.add('active');
+  document.getElementById('slide-counter').textContent = `${cur + 1} / ${total}`;
+  document.getElementById('progress-bar').style.width  = `${(cur + 1) / total * 100}%`;
+  if (!drawn.has(cur)) { drawn.add(cur); setTimeout(() => drawSlide(cur), 80); }
+}
 
-  function next() { show(current + 1); }
-  function prev() { show(current - 1); }
+document.getElementById('btn-prev').onclick = () => goTo(cur - 1);
+document.getElementById('btn-next').onclick = () => goTo(cur + 1);
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goTo(cur + 1);
+  if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp'  ) goTo(cur - 1);
+});
 
-  document.addEventListener('keydown', e => {
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') { e.preventDefault(); next(); }
-    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')                   { e.preventDefault(); prev(); }
+goTo(0);
+
+// ── CHART DISPATCHER ─────────────────────────
+function drawSlide(i) {
+  const map = { 1:drawLatency, 2:drawArch, 3:drawCadence, 4:drawDonut,
+                6:drawRadial,  7:drawRisk,  8:drawFlow,   10:drawTreemap,
+                11:drawCost,   12:drawRadar };
+  if (map[i]) map[i]();
+}
+
+// ── S2: LATENCY BARS ─────────────────────────
+function drawLatency() {
+  const el = document.getElementById('latency-chart');
+  const W  = el.parentElement.clientWidth - 40;
+  const H  = 170;
+  const svg = d3.select(el).attr('width', W).attr('height', H);
+  svg.selectAll('*').remove();
+
+  const data = [
+    { label: 'Hot Path (WebSocket)', val: 5,   color: '#10B981' },
+    { label: 'Manual Trader',        val: 180, color: '#6B7280' },
+    { label: 'Cron-based (old)',     val: 300, color: '#374151' },
+    { label: 'Mini Loop',            val: 60,  color: '#F0B429' },
+    { label: 'Full Sweep',           val: 900, color: '#3B82F6' },
+  ];
+
+  const m = { top:8, right:70, bottom:24, left:145 };
+  const iW = W - m.left - m.right, iH = H - m.top - m.bottom;
+  const g  = svg.append('g').attr('transform', `translate(${m.left},${m.top})`);
+
+  const x = d3.scaleLog().domain([1, 1200]).range([0, iW]);
+  const y = d3.scaleBand().domain(data.map(d => d.label)).range([0, iH]).padding(0.3);
+
+  g.append('g').attr('transform', `translate(0,${iH})`)
+    .call(d3.axisBottom(x).ticks(4, '~s').tickFormat(d => d >= 60 ? `${Math.round(d/60)}m` : `${d}s`))
+    .call(ax => { ax.select('.domain').remove(); ax.selectAll('text').attr('fill','#6B7280').attr('font-size',10); });
+
+  g.append('g').call(d3.axisLeft(y).tickSize(0))
+    .call(ax => { ax.select('.domain').remove(); ax.selectAll('text').attr('fill','#9CA3AF').attr('font-size',11); });
+
+  g.selectAll('rect').data(data).join('rect')
+    .attr('y', d => y(d.label)).attr('height', y.bandwidth())
+    .attr('x', 0).attr('width', 0)
+    .attr('fill', d => d.color).attr('rx', 4)
+    .transition().duration(700).delay((_,i) => i * 80)
+    .attr('width', d => x(d.val));
+
+  g.selectAll('.vl').data(data).join('text').attr('class','vl')
+    .attr('y', d => y(d.label) + y.bandwidth()/2 + 4)
+    .attr('x', d => x(d.val) + 7)
+    .attr('fill', d => d.color).attr('font-size', 11).attr('font-weight', 600)
+    .text(d => d.val < 60 ? `${d.val}s` : d.val < 3600 ? `${Math.round(d.val/60)}m` : '')
+    .attr('opacity', 0)
+    .transition().duration(500).delay((_,i) => i*80+400).attr('opacity', 1);
+}
+
+// ── S3: ARCHITECTURE FLOW ────────────────────
+function drawArch() {
+  const el  = document.getElementById('arch-chart');
+  const W   = el.parentElement.clientWidth - 40;
+  const H   = el.parentElement.clientHeight - 60;
+  if (W <= 0 || H <= 0) return;
+  const svg = d3.select(el).attr('width', W).attr('height', H);
+  svg.selectAll('*').remove();
+
+  const layers = [
+    { name: 'DATA LAYER',      color: '#3B82F6', nodes: ['Price/OHLCV','News Feed','SEC Filings','RSI · VWAP','Volume','Earnings'] },
+    { name: 'RESEARCH LAYER',  color: '#F0B429', nodes: ['ResearchAgent','ResearchStore'] },
+    { name: 'DECISION LAYER',  color: '#8B5CF6', nodes: ['AIDecisionEngine','RiskManager'] },
+    { name: 'EXECUTION LAYER', color: '#10B981', nodes: ['AlpacaExecutor','TradeStore'] },
+  ];
+
+  const lW = W / layers.length;
+  const nr = 26;
+
+  const defs = svg.append('defs');
+  defs.append('marker').attr('id','arr-red')
+    .attr('markerWidth',8).attr('markerHeight',8).attr('refX',6).attr('refY',3).attr('orient','auto')
+    .append('path').attr('d','M0,0 L0,6 L8,3 z').attr('fill','#EF4444');
+
+  layers.forEach((layer, li) => {
+    const cx  = lW * li + lW / 2;
+    const n   = layer.nodes.length;
+    const spc = Math.min((H - 90) / (n + 1), 80);
+    const startY = (H - spc * n) / 2;
+
+    svg.append('text').attr('x', cx).attr('y', 20)
+      .attr('text-anchor','middle').attr('fill', layer.color)
+      .attr('font-size', 9.5).attr('font-weight', 700).attr('letter-spacing', 1.5)
+      .text(layer.name);
+
+    layer.nodes.forEach((node, ni) => {
+      const ny = startY + spc * ni + spc / 2;
+
+      if (li < layers.length - 1) {
+        const nl  = layers[li + 1];
+        const ncx = lW * (li + 1) + lW / 2;
+        const nspc = Math.min((H - 90) / (nl.nodes.length + 1), 80);
+        const nsy  = (H - nspc * nl.nodes.length) / 2;
+        nl.nodes.forEach((_, nni) => {
+          const ty = nsy + nspc * nni + nspc / 2;
+          svg.append('line')
+            .attr('x1', cx + nr).attr('y1', ny)
+            .attr('x2', ncx - nr).attr('y2', ty)
+            .attr('stroke','#1F2937').attr('stroke-width', 1.2);
+        });
+      }
+
+      const g = svg.append('g').attr('transform', `translate(${cx},${ny})`).attr('opacity', 0);
+      g.append('circle').attr('r', nr).attr('fill','#111827').attr('stroke', layer.color).attr('stroke-width', 2);
+      const words = node.split('·').map(w => w.trim());
+      words.forEach((w, wi) => {
+        g.append('text').attr('text-anchor','middle')
+          .attr('dy', words.length > 1 ? (wi - (words.length-1)/2)*12 + 4 : 4)
+          .attr('fill','#F9FAFB').attr('font-size', 9).attr('font-weight', 500).text(w);
+      });
+      g.transition().delay(li*150 + ni*60).duration(400).attr('opacity', 1);
+    });
   });
 
-  // Initialise progress bar
-  document.getElementById('progress').style.width = (1 / total * 100) + '%';
+  // WebSocket bypass arrow
+  const ay = H - 28;
+  svg.append('line')
+    .attr('x1', lW * 0.5).attr('y1', ay)
+    .attr('x2', lW * 2.5).attr('y2', ay)
+    .attr('stroke','#EF4444').attr('stroke-width', 2)
+    .attr('stroke-dasharray','6,3').attr('marker-end','url(#arr-red)');
+  svg.append('text')
+    .attr('x', lW * 1.5).attr('y', ay - 6)
+    .attr('text-anchor','middle').attr('fill','#EF4444').attr('font-size', 10).attr('font-weight', 600)
+    .text('⚡ WebSocket Hot Path — bypasses Research layer');
+}
+
+// ── S4: CONCENTRIC RINGS ─────────────────────
+function drawCadence() {
+  const svg = d3.select('#cadence-chart');
+  svg.selectAll('*').remove();
+  const W = 320, H = 320, cx = W/2, cy = H/2;
+
+  const rings = [
+    { r:140, label:'FULL SWEEP',  sub:'15 min · 55 symbols',     color:'#3B82F6', dash:'10,4' },
+    { r: 92, label:'MINI LOOP',   sub:'60s · held positions',    color:'#F0B429', dash:'6,3'  },
+    { r: 48, label:'HOT PATH',    sub:'<5s · 1 symbol',          color:'#EF4444', dash:''     },
+  ];
+
+  rings.forEach((ring, i) => {
+    svg.append('circle').attr('cx',cx).attr('cy',cy).attr('r',0)
+      .attr('fill','none').attr('stroke', ring.color)
+      .attr('stroke-width', i === 0 ? 1.5 : 2.5)
+      .attr('stroke-dasharray', ring.dash).attr('opacity', 0.75)
+      .transition().delay(i*200).duration(500).attr('r', ring.r);
+
+    const ly = cy - ring.r + (i===0?13:12);
+    svg.append('text').attr('x',cx).attr('y',ly)
+      .attr('text-anchor','middle').attr('fill', ring.color)
+      .attr('font-size', i===0?10:9.5).attr('font-weight',700).attr('letter-spacing',1)
+      .text(ring.label).attr('opacity',0)
+      .transition().delay(i*200+400).duration(300).attr('opacity',1);
+    svg.append('text').attr('x',cx).attr('y',ly+14)
+      .attr('text-anchor','middle').attr('fill','#9CA3AF').attr('font-size',9)
+      .text(ring.sub).attr('opacity',0)
+      .transition().delay(i*200+500).duration(300).attr('opacity',1);
+  });
+
+  svg.append('circle').attr('cx',cx).attr('cy',cy).attr('r',7)
+    .attr('fill','#EF4444').attr('opacity',0)
+    .transition().delay(100).duration(400).attr('opacity',1);
+
+  // Rotating tick
+  const tg = svg.append('g');
+  tg.append('line').attr('x1',cx).attr('y1',cy-140+4).attr('x2',cx).attr('y2',cy-140-4)
+    .attr('stroke','#3B82F6').attr('stroke-width',3).attr('stroke-linecap','round');
+  (function rot() {
+    tg.attr('transform',`rotate(0,${cx},${cy})`);
+    tg.transition().duration(14000).ease(d3.easeLinear)
+      .attrTween('transform', () => d3.interpolateString(`rotate(0,${cx},${cy})`,`rotate(360,${cx},${cy})`))
+      .on('end', rot);
+  })();
+}
+
+// ── S5: DONUT CHART ──────────────────────────
+function drawDonut() {
+  const sectors = [
+    { name:'AI Chips',      count:10, color:'#F0B429', examples:'NVDA, AMD, INTC' },
+    { name:'AI Software',   count: 8, color:'#FBBF24', examples:'MSFT, GOOGL, META' },
+    { name:'Green Energy',  count:10, color:'#10B981', examples:'ENPH, FSLR, PLUG' },
+    { name:'MedTech',       count:10, color:'#3B82F6', examples:'ISRG, DXCM, MDT' },
+    { name:'Biotech',       count: 5, color:'#8B5CF6', examples:'MRNA, BNTX, NVAX' },
+    { name:'Drone/Defence', count: 8, color:'#EC4899', examples:'RKLB, JOBY, ACHR' },
+    { name:'General',       count: 4, color:'#6B7280', examples:'SPY, QQQ, IWM' },
+  ];
+
+  const svg = d3.select('#donut-chart');
+  svg.selectAll('*').remove();
+  const W=300,H=300,cx=W/2,cy=H/2,OR=120,IR=60;
+
+  const pie = d3.pie().value(d=>d.count).sort(null);
+  const arc = d3.arc().innerRadius(IR).outerRadius(OR).padAngle(0.03).cornerRadius(4);
+  const arcInit = d3.arc().innerRadius(IR).outerRadius(IR).padAngle(0.03);
+
+  svg.append('g').attr('transform',`translate(${cx},${cy})`)
+    .selectAll('path').data(pie(sectors)).join('path')
+    .attr('fill', d=>d.data.color).attr('opacity',0.9)
+    .attr('d', arcInit)
+    .transition().duration(800).delay((_,i)=>i*70)
+    .attrTween('d', function(d) {
+      const ip = d3.interpolate({startAngle:d.startAngle,endAngle:d.startAngle},d);
+      return t => arc(ip(t));
+    });
+
+  svg.append('text').attr('x',cx).attr('y',cy-8).attr('text-anchor','middle')
+    .attr('fill','#F9FAFB').attr('font-size',28).attr('font-weight',800).text('55');
+  svg.append('text').attr('x',cx).attr('y',cy+13).attr('text-anchor','middle')
+    .attr('fill','#9CA3AF').attr('font-size',11).text('Symbols');
+
+  const leg = document.getElementById('sector-legend');
+  leg.innerHTML = '';
+  sectors.forEach(s => {
+    const d = document.createElement('div');
+    d.className = 'leg-item';
+    d.innerHTML = `<div class="leg-dot" style="background:${s.color}"></div>
+      <span style="font-weight:600;min-width:100px">${s.name}</span>
+      <span style="color:var(--gold);font-weight:700;min-width:24px">${s.count}</span>
+      <span style="color:var(--muted);font-size:12px">${s.examples}</span>`;
+    leg.appendChild(d);
+  });
+}
+
+// ── S7: RADIAL MONITORS ──────────────────────
+function drawRadial() {
+  const el  = document.getElementById('radial-chart');
+  const svg = d3.select(el);
+  svg.selectAll('*').remove();
+  const W=320,H=320,cx=W/2,cy=H/2,R=130;
+
+  const mons = [
+    {name:'Price Action',color:'#3B82F6'},{name:'Volume',color:'#3B82F6'},
+    {name:'RSI',color:'#3B82F6'},{name:'VWAP',color:'#3B82F6'},{name:'EMA-21',color:'#3B82F6'},
+    {name:'Earnings',color:'#F0B429'},{name:'Analyst',color:'#F0B429'},
+    {name:'Insider',color:'#F0B429'},{name:'SEC Filings',color:'#F0B429'},
+    {name:'News',color:'#10B981'},{name:'IPO Watch',color:'#10B981'},
+    {name:'Clinical',color:'#10B981'},{name:'Momentum',color:'#10B981'},{name:'Sector Flow',color:'#10B981'},
+  ];
+
+  const n = mons.length;
+  mons.forEach((m, i) => {
+    const ang = (i/n)*2*Math.PI - Math.PI/2;
+    const nx = cx + R*Math.cos(ang), ny = cy + R*Math.sin(ang);
+
+    svg.append('line').attr('x1',cx).attr('y1',cy).attr('x2',nx).attr('y2',ny)
+      .attr('stroke','#1F2937').attr('stroke-width',1.2)
+      .attr('opacity',0).transition().delay(i*35).duration(300).attr('opacity',1);
+
+    const g = svg.append('g').attr('transform',`translate(${nx},${ny})`).attr('opacity',0);
+    g.append('circle').attr('r',19).attr('fill','#111827').attr('stroke',m.color).attr('stroke-width',1.8);
+
+    const wds = m.name.split(' ');
+    wds.forEach((w,wi) => {
+      g.append('text').attr('text-anchor','middle')
+        .attr('dy', wds.length>1 ? (wi-(wds.length-1)/2)*10+3 : 4)
+        .attr('fill','#F9FAFB').attr('font-size',8).attr('font-weight',500).text(w);
+    });
+
+    const pulse = g.append('circle').attr('r',19).attr('fill','none').attr('stroke',m.color).attr('stroke-width',1.5).attr('opacity',0.5);
+    function doPulse() {
+      pulse.attr('r',19).attr('opacity',0.5)
+        .transition().duration(1600).ease(d3.easeLinear)
+        .attr('r',32).attr('opacity',0).on('end',doPulse);
+    }
+    setTimeout(doPulse, i*200+700);
+
+    g.transition().delay(i*35+80).duration(400).attr('opacity',1);
+  });
+
+  svg.append('circle').attr('cx',cx).attr('cy',cy).attr('r',30)
+    .attr('fill','#1a2235').attr('stroke','#F0B429').attr('stroke-width',2.2);
+  svg.append('text').attr('x',cx).attr('y',cy-4).attr('text-anchor','middle')
+    .attr('fill','#F0B429').attr('font-size',8.5).attr('font-weight',700).text('Research');
+  svg.append('text').attr('x',cx).attr('y',cy+9).attr('text-anchor','middle')
+    .attr('fill','#F0B429').attr('font-size',8.5).attr('font-weight',700).text('Agent');
+}
+
+// ── S8: RISK WATERFALL ───────────────────────
+function drawRisk() {
+  document.querySelectorAll('.rs-check').forEach((el,i) => {
+    setTimeout(() => el.classList.add('on'), 300 + i*170);
+  });
+}
+
+// ── S9: WEBSOCKET FLOW ───────────────────────
+function drawFlow() {
+  const el  = document.getElementById('flow-chart');
+  const W   = el.parentElement.clientWidth - 40;
+  const H   = 200;
+  const svg = d3.select(el).attr('width', W).attr('height', H);
+  svg.selectAll('*').remove();
+
+  const stages = [
+    { label:'55 Symbols',   sub:'Bar-close events', x:0.06, color:'#6B7280' },
+    { label:'_is_hot()',     sub:'6 criteria filter', x:0.24, color:'#EF4444' },
+    { label:'hot_queue',    sub:'Batch ≤10',         x:0.44, color:'#F0B429' },
+    { label:'Claude AI',    sub:'Decision <1s',      x:0.62, color:'#8B5CF6' },
+    { label:'Risk Check',   sub:'8 guardrails',      x:0.78, color:'#3B82F6' },
+    { label:'Execute',      sub:'Alpaca order',      x:0.94, color:'#10B981' },
+  ];
+  const cy = H / 2;
+
+  for (let i = 0; i < stages.length - 1; i++) {
+    svg.append('line')
+      .attr('x1', stages[i].x*W + 38).attr('y1', cy)
+      .attr('x2', stages[i+1].x*W - 38).attr('y2', cy)
+      .attr('stroke','#1F2937').attr('stroke-width',2);
+  }
+
+  stages.forEach(s => {
+    const g = svg.append('g').attr('transform', `translate(${s.x*W},${cy})`);
+    g.append('rect').attr('x',-36).attr('y',-21).attr('width',72).attr('height',42)
+      .attr('rx',8).attr('fill','#111827').attr('stroke',s.color).attr('stroke-width',1.8);
+    g.append('text').attr('text-anchor','middle').attr('dy',-4)
+      .attr('fill',s.color).attr('font-size',9.5).attr('font-weight',700).text(s.label);
+    g.append('text').attr('text-anchor','middle').attr('dy',11)
+      .attr('fill','#9CA3AF').attr('font-size',9).text(s.sub);
+  });
+
+  function spawnDot() {
+    svg.append('circle')
+      .attr('cx', stages[0].x*W).attr('cy', cy)
+      .attr('r', 5).attr('fill','#EF4444').attr('opacity',0.9)
+      .transition().duration(2200).ease(d3.easeLinear)
+      .attr('cx', stages[stages.length-1].x*W)
+      .on('end', function() { d3.select(this).remove(); });
+  }
+  spawnDot();
+  const iv = setInterval(spawnDot, 550);
+  el._iv = iv;
+}
+
+// ── S11: TREEMAP ─────────────────────────────
+function drawTreemap() {
+  const el  = document.getElementById('treemap-chart');
+  const W   = el.parentElement.clientWidth - 40;
+  const H   = 300;
+  const svg = d3.select(el).attr('width', W).attr('height', H);
+  svg.selectAll('*').remove();
+
+  const root = d3.hierarchy({
+    name: 'root', children: [
+      { name:'Intelligence', color:'#F0B429', children:[
+        {name:'Claude Haiku',value:30},{name:'Anthropic SDK',value:15},{name:'pandas',value:20},{name:'TA-Lib',value:15}]},
+      { name:'Connectivity', color:'#3B82F6', children:[
+        {name:'Alpaca REST',value:25},{name:'Alpaca WS',value:22},{name:'Coinbase',value:10}]},
+      { name:'Storage', color:'#10B981', children:[
+        {name:'PostgreSQL',value:20},{name:'research_store',value:18},{name:'trade_store',value:12},{name:'SQLite',value:8}]},
+      { name:'Deployment', color:'#8B5CF6', children:[
+        {name:'Railway.app',value:16},{name:'Streamlit',value:14},{name:'systemd',value:10}]},
+    ]
+  }).sum(d=>d.value).sort((a,b)=>b.value-a.value);
+
+  d3.treemap().size([W,H]).padding(3).paddingTop(18)(root);
+
+  const pColor = n => { let x=n; while(x.depth>1) x=x.parent; return x.data.color||'#4B5563'; };
+
+  root.leaves().forEach(d => {
+    const g = svg.append('g').attr('transform',`translate(${d.x0},${d.y0})`);
+    g.append('rect')
+      .attr('width',d.x1-d.x0).attr('height',d.y1-d.y0)
+      .attr('fill',pColor(d)).attr('fill-opacity',0.12)
+      .attr('stroke',pColor(d)).attr('stroke-width',1.2).attr('rx',4);
+    if (d.x1-d.x0 > 50) {
+      g.append('text').attr('x',5).attr('y',15)
+        .attr('fill',pColor(d)).attr('font-size',d.x1-d.x0>80?11:9).attr('font-weight',600)
+        .text(d.data.name);
+    }
+  });
+
+  root.children.forEach(d => {
+    svg.append('text').attr('x',d.x0+4).attr('y',d.y0+12)
+      .attr('fill',d.data.color).attr('font-size',10).attr('font-weight',800)
+      .text(d.data.name.toUpperCase());
+  });
+}
+
+// ── S12: COST BARS ───────────────────────────
+function drawCost() {
+  const el  = document.getElementById('cost-chart');
+  const W   = el.parentElement.clientWidth - 40;
+  const H   = 240;
+  const svg = d3.select(el).attr('width', W).attr('height', H);
+  svg.selectAll('*').remove();
+
+  const data = [
+    { label:'Full Sweep\n55 symbols', cost:0.055, color:'#3B82F6' },
+    { label:'Research\ndeep run',     cost:0.012, color:'#10B981' },
+    { label:'Mini Loop\n5 positions', cost:0.005, color:'#F0B429' },
+    { label:'Hot Path\n1 symbol',     cost:0.001, color:'#EF4444' },
+    { label:'Per Day\nestimate',      cost:0.090, color:'#8B5CF6' },
+  ];
+
+  const m = {top:8,right:50,bottom:38,left:28};
+  const iW=W-m.left-m.right, iH=H-m.top-m.bottom;
+  const g = svg.append('g').attr('transform',`translate(${m.left},${m.top})`);
+
+  const x = d3.scaleBand().domain(data.map(d=>d.label)).range([0,iW]).padding(0.32);
+  const y = d3.scaleLinear().domain([0,0.10]).range([iH,0]);
+
+  g.append('g').attr('transform',`translate(0,${iH})`)
+    .call(d3.axisBottom(x).tickFormat(d=>d.split('\n')[0]))
+    .call(ax=>{ax.select('.domain').remove();ax.selectAll('text').attr('fill','#9CA3AF').attr('font-size',10);});
+
+  g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d=>`$${d.toFixed(3)}`))
+    .call(ax=>{ax.select('.domain').remove();ax.selectAll('text').attr('fill','#9CA3AF').attr('font-size',9);});
+
+  g.selectAll('rect').data(data).join('rect')
+    .attr('x',d=>x(d.label)).attr('width',x.bandwidth())
+    .attr('y',iH).attr('height',0)
+    .attr('fill',d=>d.color).attr('rx',4).attr('opacity',0.85)
+    .transition().duration(600).delay((_,i)=>i*90)
+    .attr('y',d=>y(d.cost)).attr('height',d=>iH-y(d.cost));
+
+  g.selectAll('.cv').data(data).join('text').attr('class','cv')
+    .attr('x',d=>x(d.label)+x.bandwidth()/2).attr('y',d=>y(d.cost)-5)
+    .attr('text-anchor','middle').attr('fill',d=>d.color)
+    .attr('font-size',10).attr('font-weight',600)
+    .text(d=>`$${d.cost.toFixed(3)}`)
+    .attr('opacity',0).transition().duration(500).delay((_,i)=>i*90+400).attr('opacity',1);
+}
+
+// ── S13: RADAR ───────────────────────────────
+function drawRadar() {
+  const svg = d3.select('#radar-chart');
+  svg.selectAll('*').remove();
+  const W=320,H=320,cx=W/2,cy=H/2,R=120;
+
+  const axes   = ['Signal\nLatency','Risk\nControl','Universe\nCoverage','Decision\nConsistency','Cost\nEfficiency','Transparency'];
+  const system = [0.95, 0.90, 0.95, 0.98, 0.90, 0.85];
+  const base   = [0.30, 0.55, 0.20, 0.50, 0.40, 0.70];
+  const n = axes.length;
+  const ang = i => (i/n)*2*Math.PI - Math.PI/2;
+
+  [0.25,0.5,0.75,1.0].forEach(f => {
+    const pts = axes.map((_,i)=>[cx+R*f*Math.cos(ang(i)), cy+R*f*Math.sin(ang(i))]);
+    svg.append('polygon').attr('points',pts.map(p=>p.join(',')).join(' '))
+      .attr('fill','none').attr('stroke','#1F2937').attr('stroke-width',1);
+  });
+
+  axes.forEach((ax,i) => {
+    const x2=cx+R*Math.cos(ang(i)), y2=cy+R*Math.sin(ang(i));
+    svg.append('line').attr('x1',cx).attr('y1',cy).attr('x2',x2).attr('y2',y2)
+      .attr('stroke','#1F2937').attr('stroke-width',1);
+    const lx=cx+(R+20)*Math.cos(ang(i)), ly=cy+(R+20)*Math.sin(ang(i));
+    const words = ax.split('\n');
+    words.forEach((w,wi)=>{
+      svg.append('text').attr('x',lx).attr('y',ly+(wi-(words.length-1)/2)*12)
+        .attr('text-anchor','middle').attr('dominant-baseline','middle')
+        .attr('fill','#9CA3AF').attr('font-size',9.5).attr('font-weight',500).text(w);
+    });
+  });
+
+  const bPts = base.map((v,i)=>[cx+R*v*Math.cos(ang(i)),cy+R*v*Math.sin(ang(i))]);
+  svg.append('polygon').attr('points',bPts.map(p=>p.join(',')).join(' '))
+    .attr('fill','#4B5563').attr('fill-opacity',0.3).attr('stroke','#4B5563').attr('stroke-width',2);
+
+  const sPts = system.map((v,i)=>[cx+R*v*Math.cos(ang(i)),cy+R*v*Math.sin(ang(i))]);
+  svg.append('polygon').attr('points',sPts.map(p=>p.join(',')).join(' '))
+    .attr('fill','#F0B429').attr('fill-opacity',0).attr('stroke','#F0B429').attr('stroke-width',2.5)
+    .transition().duration(800).attr('fill-opacity',0.22);
+
+  sPts.forEach(p=>{
+    svg.append('circle').attr('cx',p[0]).attr('cy',p[1]).attr('r',4)
+      .attr('fill','#F0B429').attr('stroke','#0A0E1A').attr('stroke-width',2);
+  });
+}
+
+// ── INIT ─────────────────────────────────────
+document.getElementById('progress-bar').style.width = `${1/total*100}%`;
 </script>
 </body>
 </html>
