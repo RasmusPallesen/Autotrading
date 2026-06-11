@@ -394,10 +394,12 @@ def execute_opportunity_sell(
         )
         return positions, positions_map
 
+    if not is_market_open():
+        logger.info("Opportunity sell skipped — held-position sells only during market hours")
+        return positions, positions_map
+
     logger.info("OPPORTUNITY SELL triggered: %s", sell_reason)
-    _ext = is_post_market()
-    _opp_price = data_fetcher.get_latest_price(weakest["symbol"]) if _ext else None
-    sell_result = executor.sell(symbol=weakest["symbol"], close_all=True, extended_hours=_ext, limit_price=_opp_price if _ext else None)
+    sell_result = executor.sell(symbol=weakest["symbol"], close_all=True)
 
     if not sell_result:
         logger.warning("Opportunity sell order failed for %s", weakest["symbol"])
@@ -789,13 +791,22 @@ def run_loop(
 
     # 8. Rank all decisions by conviction before acting
     # SELLs always go first (free up cash), then BUYs ranked by conviction
+    # Held-position sells are only executed during regular market hours.
+    _sell_allowed = is_market_open()
     sells = sorted(
-        [d for d in decisions if d.action == "SELL" and d.symbol not in locked_symbols],
+        [
+            d for d in decisions
+            if d.action == "SELL"
+            and d.symbol not in locked_symbols
+            and (_sell_allowed or d.symbol not in positions_map)
+        ],
         key=lambda d: d.confidence, reverse=True,
     )
     for d in decisions:
         if d.action == "SELL" and d.symbol in locked_symbols:
             logger.info("[%s] SELL evaluation suppressed — locked by user", d.symbol)
+        elif d.action == "SELL" and not _sell_allowed and d.symbol in positions_map:
+            logger.info("[%s] SELL suppressed — held-position sells only during market hours", d.symbol)
 
     # Urgency-weighted buy ranking.
     # Pure confidence ranking caused the PODD RSI-10.5 HIGH urgency signal on 05/04
@@ -1419,6 +1430,8 @@ def _drain_hot_queue(
                 elif decision.action == "SELL" and symbol in positions_map:
                     if symbol in locked_symbols:
                         logger.info("[%s] [HOT PATH] SELL skipped — locked by user", symbol)
+                    elif not is_market_open():
+                        logger.info("[%s] [HOT PATH] SELL skipped — held-position sells only during market hours", symbol)
                     else:
                         result = executor.sell(symbol, close_all=True, extended_hours=_ext, limit_price=price if _ext else None)
                         store.log_execution(
@@ -1577,6 +1590,9 @@ def _drain_news_signals(
         elif decision.action == "SELL" and symbol in positions_map:
             if symbol in locked_symbols:
                 continue
+            if not is_market_open():
+                logger.info("[NEWS HOT] %s SELL skipped — held-position sells only during market hours", symbol)
+                continue
             result = executor.sell(
                 symbol, close_all=True,
                 extended_hours=_ext, limit_price=price if _ext else None,
@@ -1710,7 +1726,7 @@ def main():
                     logger.exception("Unhandled exception in agent loop: %s", e)
 
             # ── Mini loop (every MINI_INTERVAL seconds, between sweeps) ────────
-            elif bar_stream and now - last_mini >= MINI_INTERVAL:
+            elif bar_stream and now - last_mini >= MINI_INTERVAL and is_market_open():
                 try:
                     # Fast-track any newly discovered symbols to the stream
                     if research_store:
