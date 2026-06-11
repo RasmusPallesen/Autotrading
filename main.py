@@ -216,14 +216,33 @@ def check_market_regime(alpaca_config) -> tuple:
 
 def is_market_open() -> bool:
     """
-    Returns True if NYSE is currently open.
-    NYSE hours: Mon-Fri 09:30-16:00 ET = 13:30-20:00 UTC = 15:30-22:00 Copenhagen.
+    Returns True if NYSE regular session is open (09:30-16:00 ET).
+    NYSE hours: Mon-Fri 09:30-16:00 ET = 13:30-20:00 UTC.
     """
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
     if now.weekday() >= 5:
         return False
     return _dtime(13, 30) <= now.time() <= _dtime(20, 0)
+
+
+def is_post_market() -> bool:
+    """
+    Returns True during Alpaca-supported post-market session (16:00-20:00 ET).
+    Post-market: Mon-Fri 16:00-20:00 ET = 20:00-00:00 UTC.
+    Extended-hours orders require limit orders with extended_hours=True.
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    if now.weekday() >= 5:
+        return False
+    t = now.time()
+    return t >= _dtime(20, 0)  # 20:00-23:59 UTC = 16:00-20:00 ET
+
+
+def is_trading_hours() -> bool:
+    """Returns True during regular market hours OR post-market extended hours."""
+    return is_market_open() or is_post_market()
 
 
 def find_weakest_position(positions: list, positions_map: dict,
@@ -371,7 +390,9 @@ def execute_opportunity_sell(
         return positions, positions_map
 
     logger.info("OPPORTUNITY SELL triggered: %s", sell_reason)
-    sell_result = executor.sell(symbol=weakest["symbol"], close_all=True)
+    _ext = is_post_market()
+    _opp_price = data_fetcher.get_latest_price(weakest["symbol"]) if _ext else None
+    sell_result = executor.sell(symbol=weakest["symbol"], close_all=True, extended_hours=_ext, limit_price=_opp_price if _ext else None)
 
     if not sell_result:
         logger.warning("Opportunity sell order failed for %s", weakest["symbol"])
@@ -985,11 +1006,14 @@ def run_loop(
                 )
                 continue
 
+            _ext = is_post_market()
             result = executor.buy(
                 symbol=decision.symbol,
                 notional=notional,
                 stop_loss_price=stop_loss,
                 take_profit_price=take_profit,
+                extended_hours=_ext,
+                limit_price=current_price if _ext else None,
             )
             if result and not hasattr(result, 'is_pdt'):
                 store.log_execution(
@@ -1025,7 +1049,13 @@ def run_loop(
                         decision.symbol,
                     )
                     continue
-                result = executor.sell(symbol=decision.symbol, close_all=True)
+                _ext = is_post_market()
+                result = executor.sell(
+                    symbol=decision.symbol,
+                    close_all=True,
+                    extended_hours=_ext,
+                    limit_price=current_price if _ext else None,
+                )
                 if result and not hasattr(result, 'is_pdt'):
                     market_value = existing.get("market_value")
                     if not market_value:
@@ -1189,11 +1219,12 @@ def run_mini_loop(
             continue
 
         price = data_fetcher.get_latest_price(symbol)
+        _ext = is_post_market()
         if decision.action == "SELL" and symbol in positions_map:
             if symbol in locked_symbols:
                 logger.info("[%s] [MINI] SELL skipped — locked by user", symbol)
                 continue
-            result = executor.sell(symbol, close_all=True)
+            result = executor.sell(symbol, close_all=True, extended_hours=_ext, limit_price=price if _ext else None)
             store.log_execution(
                 order_id=result.get("order_id", "") if isinstance(result, dict) else "",
                 symbol=symbol,
@@ -1203,7 +1234,7 @@ def run_mini_loop(
             logger.info("[MINI] SELL %s executed: %s", symbol, result)
         elif decision.action == "BUY" and symbol not in positions_map:
             stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
-            result = executor.buy(symbol, verdict.adjusted_notional, stop, target)
+            result = executor.buy(symbol, verdict.adjusted_notional, stop, target, extended_hours=_ext, limit_price=price if _ext else None)
             store.log_execution(
                 order_id=result.get("order_id", "") if isinstance(result, dict) else "",
                 symbol=symbol,
@@ -1355,9 +1386,10 @@ def _drain_hot_queue(
             )
             if verdict.approved:
                 price = data_fetcher.get_latest_price(symbol)
+                _ext = is_post_market()
                 if decision.action == "BUY" and symbol not in positions_map:
                     stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
-                    result = executor.buy(symbol, verdict.adjusted_notional, stop, target)
+                    result = executor.buy(symbol, verdict.adjusted_notional, stop, target, extended_hours=_ext, limit_price=price if _ext else None)
                     store.log_execution(
                         order_id=result.get("order_id", "") if isinstance(result, dict) else "",
                         symbol=symbol,
@@ -1371,7 +1403,7 @@ def _drain_hot_queue(
                     if symbol in locked_symbols:
                         logger.info("[%s] [HOT PATH] SELL skipped — locked by user", symbol)
                     else:
-                        result = executor.sell(symbol, close_all=True)
+                        result = executor.sell(symbol, close_all=True, extended_hours=_ext, limit_price=price if _ext else None)
                         store.log_execution(
                             order_id=result.get("order_id", "") if isinstance(result, dict) else "",
                             symbol=symbol,
@@ -1470,7 +1502,7 @@ def main():
     while running:
         now = time.time()
 
-        if is_market_open():
+        if is_trading_hours():
             # ── Full sweep (every SWEEP_INTERVAL seconds) ──────────────────────
             if now - last_sweep >= SWEEP_INTERVAL:
                 try:
@@ -1485,13 +1517,13 @@ def main():
                     last_sweep = time.time()
                     last_mini  = last_sweep  # sweep covers held positions too
 
-                    if high_urgency_blocked and running and is_market_open():
+                    if high_urgency_blocked and running and is_trading_hours():
                         logger.info(
                             "Fast retry in %ds for HIGH urgency blocked symbols: %s",
                             FAST_RETRY_INTERVAL, high_urgency_blocked,
                         )
                         time.sleep(FAST_RETRY_INTERVAL)
-                        if running and is_market_open():
+                        if running and is_trading_hours():
                             try:
                                 logger.info("--- Fast retry tick for %s ---", high_urgency_blocked)
                                 run_loop(
@@ -1549,7 +1581,7 @@ def main():
                 )
 
         else:
-            logger.info("Market closed -- agent paused (NYSE open 15:30-22:00 Copenhagen time weekdays)")
+            logger.info("Market closed -- agent paused (regular 15:30-22:00 CET, post-market 22:00-02:00 CET)")
 
         if running:
             time.sleep(5)
