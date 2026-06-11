@@ -785,9 +785,12 @@ def run_loop(
     # 8. Rank all decisions by conviction before acting
     # SELLs always go first (free up cash), then BUYs ranked by conviction
     sells = sorted(
-        [d for d in decisions if d.action == "SELL"],
+        [d for d in decisions if d.action == "SELL" and d.symbol not in locked_symbols],
         key=lambda d: d.confidence, reverse=True,
     )
+    for d in decisions:
+        if d.action == "SELL" and d.symbol in locked_symbols:
+            logger.info("[%s] SELL evaluation suppressed — locked by user", d.symbol)
 
     # Urgency-weighted buy ranking.
     # Pure confidence ranking caused the PODD RSI-10.5 HIGH urgency signal on 05/04
@@ -1140,6 +1143,10 @@ def run_mini_loop(
     positions_map = {p["symbol"]: p for p in positions}
 
     for symbol in held_symbols:
+        if symbol in locked_symbols:
+            logger.debug("[MINI] %s skipped — locked by user (sell evaluation suppressed)", symbol)
+            continue
+
         # Skip if the hot path already evaluated this symbol within the last
         # MINI_INTERVAL seconds — avoids paying for the same decision twice.
         last_eval = _last_evaluated.get(symbol, 0)
@@ -1309,6 +1316,11 @@ def _drain_hot_queue(
                 continue
 
             positions_map = {p["symbol"]: p for p in positions}
+
+            # Skip evaluation entirely for locked held positions — no sell will fire anyway
+            if symbol in locked_symbols and symbol in positions_map:
+                logger.debug("[HOT PATH] %s skipped — locked by user (sell evaluation suppressed)", symbol)
+                continue
 
             # Skip Claude for unowned symbols on bearish bars — we only want BUY
             # signals for new entries; a SELL rec on an unowned stock is worthless.
