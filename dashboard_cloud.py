@@ -1105,10 +1105,13 @@ def _detail_panel(row: dict, section: str):
     ts          = row.get("ts", "")
     ts_str      = ts.strftime("%d %b %Y %H:%M") if hasattr(ts, "strftime") else str(ts)
 
-    kp_html = "".join(
-        f'<div class="detail-point"><span class="detail-point-icon">›</span>{p}</div>'
-        for p in key_points
-    ) if key_points else ""
+    def _kp_item(p):
+        if str(p).startswith("Article: "):
+            href = str(p)[len("Article: "):]
+            return f'<div class="detail-point"><span class="detail-point-icon">›</span><a href="{href}" target="_blank" rel="noopener" style="color:#f59e0b;">Read article →</a></div>'
+        return f'<div class="detail-point"><span class="detail-point-icon">›</span>{p}</div>'
+
+    kp_html = "".join(_kp_item(p) for p in key_points) if key_points else ""
 
     rf_html = "".join(
         f'<div class="detail-risk"><span class="detail-point-icon">⚠</span>{r}</div>'
@@ -1565,6 +1568,11 @@ with tab_signals:
             key = f"news:{row['symbol']}:{idx}"
             is_open = st.session_state.selected == key
 
+            # Extract article URL from key_points if present
+            kp_list = _parse_kp(row.get("key_points"))
+            article_url = next((p[len("Article: "):] for p in kp_list if str(p).startswith("Article: ")), "")
+            read_link = f'<a href="{article_url}" target="_blank" rel="noopener" style="color:#f59e0b;font-size:0.75rem;white-space:nowrap;">Read →</a>' if article_url else ""
+
             st.markdown(f"""
             <div class="card" style="margin-bottom:2px;border-left:3px solid {border_color};">
                 <div class="card-header">
@@ -1576,6 +1584,7 @@ with tab_signals:
                         <span class="badge {sc_cls}">{row['sentiment']}</span>
                         <span class="badge badge-neutral">{badge_label}</span>
                         <span class="badge badge-pct">{row['conviction_pct']}%</span>
+                        {read_link}
                     </div>
                 </div>
                 <div class="card-text">{str(row['summary'])[:180]}</div>
