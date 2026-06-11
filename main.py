@@ -655,6 +655,19 @@ def run_loop(
             min_conviction=RESEARCH_GATE_THRESHOLD,
             extended_universe=_dynamic_stream_symbols,
         )
+        # Outside regular market hours: drop scanner/news discoveries from the
+        # sweep — they've already been evaluated once by _drain_news_signals()
+        # when written. Re-evaluating stale signals every 15 min post-market
+        # wastes API calls. Keep only held positions + core watchlist.
+        if not is_market_open() and discovered_symbols:
+            before = len(all_symbols)
+            discovery_set = set(discovered_symbols)
+            all_symbols = [s for s in all_symbols if s not in discovery_set]
+            discovered_symbols = []
+            logger.info(
+                "Post-market sweep: dropped %d discovery symbol(s) — news hot-path handles new signals",
+                before - len(all_symbols),
+            )
 
     logger.info(
         "Active this tick: %d/%d symbols (research-gated) + %d scanner discoveries",
