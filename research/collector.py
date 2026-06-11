@@ -2,10 +2,13 @@
 Data collector: fetches news, SEC filings (with actual content), and Reddit posts.
 """
 
+import email.utils
+import html
 import logging
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 import requests
@@ -73,20 +76,208 @@ class ResearchItem:
     raw: dict
 
 
-# ── News stub — returns empty (SEC filings handle primary research) ────────────
+# ── News fetching via Alpaca News API + Yahoo Finance RSS fallback ────────────
+#
+# Primary: Alpaca /v1beta1/news — returns Benzinga news, batched per call,
+#   uses the same ALPACA_API_KEY already configured. Free tier included.
+# Fallback: Yahoo Finance RSS and Google News RSS (work from most server IPs).
 
-def fetch_news(symbols: List[str], api_key: str) -> List[ResearchItem]:
+_NEWS_CUTOFF_HOURS   = 48
+_NEWS_MAX_PER_SYMBOL = 5
+_NEWS_BATCH_SIZE     = 10     # Alpaca allows up to ~50 symbols per request
+_RSS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+}
+
+
+def _parse_iso_date(date_str: str) -> Optional[datetime]:
+    """Parse ISO 8601 or RFC 2822 date string into a timezone-aware datetime."""
+    if not date_str:
+        return None
+    try:
+        # ISO 8601 (Alpaca format): 2024-06-10T14:30:00Z
+        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        try:
+            return email.utils.parsedate_to_datetime(date_str.strip())
+        except Exception:
+            return None
+
+
+def _fetch_alpaca_news(
+    symbols: List[str],
+    cutoff: datetime,
+    alpaca_key: str,
+    alpaca_secret: str,
+) -> List[ResearchItem]:
     """
-    News fetching placeholder.
-    Benzinga via Massive requires a paid plan ($99/mo).
-    Primary research is handled by SEC 8-K filing content reading.
-    Upgrade to Massive Benzinga plan to enable full article fetching.
+    Fetch news from Alpaca's /v1beta1/news endpoint (Benzinga source).
+    Batches up to _NEWS_BATCH_SIZE symbols per request.
     """
-    if api_key:
-        logger.info("News API key set but Benzinga endpoint requires paid Massive plan -- skipping")
-    else:
-        logger.debug("No news API key set -- skipping news fetch")
+    items: List[ResearchItem] = []
+    seen_ids: set = set()
+    start_str = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    headers = {
+        "APCA-API-KEY-ID":     alpaca_key,
+        "APCA-API-SECRET-KEY": alpaca_secret,
+    }
+    base_url = "https://data.alpaca.markets/v1beta1/news"
+
+    for i in range(0, len(symbols), _NEWS_BATCH_SIZE):
+        batch = symbols[i : i + _NEWS_BATCH_SIZE]
+        params = {
+            "symbols":         ",".join(batch),
+            "start":           start_str,
+            "limit":           50,
+            "include_content": "false",
+            "sort":            "desc",
+        }
+        try:
+            resp = requests.get(base_url, params=params, headers=headers, timeout=10)
+            if resp.status_code == 403:
+                logger.debug("[NEWS] Alpaca news: 403 (key missing or not whitelisted)")
+                break
+            if resp.status_code == 429:
+                logger.warning("[NEWS] Alpaca news rate-limited — pausing 5s")
+                time.sleep(5)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            for article in data.get("news", []):
+                article_id = str(article.get("id", ""))
+                if article_id in seen_ids:
+                    continue
+                seen_ids.add(article_id)
+
+                pub_dt = _parse_iso_date(article.get("created_at", ""))
+                if pub_dt is None:
+                    pub_dt = datetime.now(timezone.utc)
+                if pub_dt < cutoff:
+                    continue
+
+                headline = html.unescape((article.get("headline") or "").strip())
+                summary  = html.unescape((article.get("summary")  or headline).strip())
+                url      = article.get("url", "")
+                source   = article.get("source", "benzinga")
+                tickers  = article.get("symbols", batch)
+
+                age_hours = (datetime.now(timezone.utc) - pub_dt).total_seconds() / 3600
+                for sym in tickers:
+                    if sym in batch:
+                        items.append(ResearchItem(
+                            source="news",
+                            symbol=sym,
+                            title=headline[:200],
+                            summary=summary[:600],
+                            url=url,
+                            published_at=pub_dt,
+                            raw={"feed": source, "age_hours": round(age_hours, 1), "id": article_id},
+                        ))
+        except Exception as exc:
+            logger.debug("[NEWS] Alpaca batch %s error: %s", batch[:3], exc)
+        time.sleep(0.2)
+
+    logger.info("[NEWS] Alpaca returned %d articles for %d symbols", len(items), len(symbols))
+    return items
+
+
+def _fetch_rss_symbol(symbol: str, cutoff: datetime) -> List[ResearchItem]:
+    """
+    Fallback: fetch Yahoo Finance RSS then Google News RSS for a single symbol.
+    Returns up to _NEWS_MAX_PER_SYMBOL items or empty list if both fail.
+    """
+    sources = [
+        ("yahoo", f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"),
+        ("google", f"https://news.google.com/rss/search?q={symbol}+stock+news&hl=en-US&gl=US&ceid=US:en"),
+    ]
+    for feed_name, url in sources:
+        try:
+            resp = requests.get(url, headers=_RSS_HEADERS, timeout=8)
+            if resp.status_code in (403, 429):
+                continue
+            resp.raise_for_status()
+            root = ET.fromstring(resp.content)
+            items: List[ResearchItem] = []
+            for item in root.iter("item"):
+                title = html.unescape((item.findtext("title") or "").strip())
+                link  = (item.findtext("link") or "").strip()
+                desc  = html.unescape((item.findtext("description") or "").strip())
+                pub_str = item.findtext("pubDate") or item.findtext("published") or ""
+                pub_dt = _parse_iso_date(pub_str) or datetime.now(timezone.utc)
+                if pub_dt < cutoff or not title:
+                    continue
+                age_h = (datetime.now(timezone.utc) - pub_dt).total_seconds() / 3600
+                items.append(ResearchItem(
+                    source="news", symbol=symbol,
+                    title=title[:200],
+                    summary=desc[:600] if desc else title,
+                    url=link,
+                    published_at=pub_dt,
+                    raw={"feed": feed_name, "age_hours": round(age_h, 1)},
+                ))
+            if items:
+                return items[:_NEWS_MAX_PER_SYMBOL]
+        except Exception:
+            continue
     return []
+
+
+def fetch_news(symbols: List[str], api_key: str = "") -> List[ResearchItem]:
+    """
+    Fetch recent news articles for each symbol.
+
+    Strategy (in order of preference):
+    1. Alpaca /v1beta1/news (Benzinga) — uses ALPACA_API_KEY + ALPACA_SECRET_KEY env vars.
+       Batched, efficient, returns high-quality financial news. Free tier included.
+    2. Yahoo Finance RSS / Google News RSS — per-symbol fallback if Alpaca unavailable.
+
+    Returns up to 5 articles per symbol from the last 48 hours.
+    The api_key parameter is accepted for backward compatibility but ignored
+    (Alpaca keys are read from environment variables directly).
+    """
+    import os
+    cutoff      = datetime.now(timezone.utc) - timedelta(hours=_NEWS_CUTOFF_HOURS)
+    all_items: List[ResearchItem] = []
+    seen_urls:  set = set()
+
+    alpaca_key    = os.getenv("ALPACA_API_KEY", "")
+    alpaca_secret = os.getenv("ALPACA_SECRET_KEY", "")
+
+    if alpaca_key and alpaca_secret:
+        raw = _fetch_alpaca_news(symbols, cutoff, alpaca_key, alpaca_secret)
+        # Dedup URLs and cap per symbol
+        per_symbol: dict = {}
+        for item in raw:
+            if item.url in seen_urls:
+                continue
+            seen_urls.add(item.url)
+            bucket = per_symbol.setdefault(item.symbol, [])
+            if len(bucket) < _NEWS_MAX_PER_SYMBOL:
+                bucket.append(item)
+        for sym_items in per_symbol.values():
+            all_items.extend(sym_items)
+    else:
+        # No Alpaca keys — fall back to RSS per symbol
+        logger.info("[NEWS] No Alpaca keys — using RSS fallback for %d symbols", len(symbols))
+        for symbol in symbols:
+            items = _fetch_rss_symbol(symbol, cutoff)
+            new_items = [i for i in items if i.url not in seen_urls]
+            for i in new_items:
+                seen_urls.add(i.url)
+            all_items.extend(new_items)
+            time.sleep(0.25)
+
+    logger.info("[NEWS] Total: %d articles for %d symbols", len(all_items), len(symbols))
+    return all_items
 
 
 # ── SEC EDGAR filings with content fetching ────────────────────────────────────

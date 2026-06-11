@@ -38,6 +38,7 @@ from data.universe_scanner import UniverseScanner
 from data.intraday_monitor import IntradayMonitor, CORE_INTRADAY
 from data.momentum_monitor import MomentumMonitor
 from data.ipo_monitor import IpoMonitor
+from data.news_scanner import NewsScanner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -189,7 +190,7 @@ def _get_symbol_detail(scanner, symbol: str) -> dict:
 
 # ── Main research cycle ────────────────────────────────────────────────────────
 
-def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None, universe_scanner=None, intraday_monitor=None, momentum_monitor=None, ipo_monitor=None, universe_candidates=None, research_signals_map=None):
+def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monitor=None, iv_monitor=None, breakout_screener=None, alpaca_config=None, institutional_monitor=None, universe_scanner=None, intraday_monitor=None, momentum_monitor=None, ipo_monitor=None, universe_candidates=None, research_signals_map=None, hot_news_symbols=None):
     logger.info("=== Research cycle starting ===")
 
     base_symbols = config.watchlist.all_symbols
@@ -479,7 +480,17 @@ def run_research_cycle(analyst, store, scanner, earnings_cal=None, insider_monit
     elif not is_market_open():
         logger.debug("Intraday monitor skipped -- market closed")
 
-    # News, SEC, Reddit — no caching here (freshness matters)
+    # Inject news-hot symbols from the fast news scan cycle
+    if hot_news_symbols:
+        for sym in hot_news_symbols:
+            force_invalidate_symbols.add(sym)
+            if sym not in all_symbols and sym not in discovered_symbols:
+                discovered_symbols.append(sym)
+        logger.info(
+            "[NEWS] %d news-hot symbols injected for priority analysis: %s",
+            len(hot_news_symbols), hot_news_symbols,
+        )
+
     # News, SEC, Reddit — no caching here (freshness matters)
     news_items = fetch_news(
         all_symbols,
@@ -803,8 +814,12 @@ def main():
     intraday_monitor      = IntradayMonitor()
     momentum_monitor      = MomentumMonitor()
     ipo_monitor           = IpoMonitor() if os.getenv("MASSIVE_API_KEY") else None
+    news_scanner          = NewsScanner()
     _universe_candidates  = []
     _last_universe_scan   = None
+    _last_news_scan       = None
+    _hot_news_symbols = []
+    _NEWS_SCAN_INTERVAL   = int(os.getenv("NEWS_SCAN_INTERVAL_SECONDS", "300"))
     earnings_cal          = EarningsCalendar()
     insider_monitor       = InsiderMonitor()
     iv_monitor            = IVMonitor()
@@ -867,6 +882,50 @@ def main():
             except Exception as e:
                 logger.warning("Universe scan error: %s", e)
 
+        # ── Fast news scan (every 5 min, 24/7) ───────────────────────────────────
+        # Keyword-scores RSS headlines; hot symbols get force-fresh Claude analysis
+        # in the next deep research cycle. No Claude call here — keeps it cheap.
+        if _last_news_scan is None or (now - _last_news_scan).total_seconds() >= _NEWS_SCAN_INTERVAL:
+            try:
+                logger.info("[NEWS] Running fast news scan for %d symbols", len(config.watchlist.all_symbols))
+                news_items_fast = fetch_news(config.watchlist.all_symbols)
+                hits = news_scanner.scan(news_items_fast)
+                _hot_news_symbols = news_scanner.get_hot_symbols(hits, min_score=4)
+                _last_news_scan = now
+
+                if hits:
+                    logger.info(
+                        "[NEWS] Hot symbols: %s",
+                        [(h.symbol, f"{h.score:+d}", h.sentiment) for h in hits[:10]],
+                    )
+                    # Write BREAKING_NEWS signals for strong hits (score ≥ 6)
+                    # so the dashboard shows them immediately (TTL=1h, Claude overwrites later)
+                    for h in hits:
+                        if abs(h.score) >= 6:
+                            try:
+                                store.write_signal(
+                                    symbol=h.symbol,
+                                    sentiment=h.sentiment,
+                                    conviction=min(0.60, abs(h.score) / 12.0),
+                                    recommended_action="WATCH",
+                                    summary=f"[BREAKING NEWS] {h.top_headline}",
+                                    key_points=[
+                                        f"Keyword score: {h.score:+d}",
+                                        f"{h.article_count} new articles in last scan",
+                                        f"Scanned at {h.scanned_at.strftime('%H:%M UTC')}",
+                                    ],
+                                    risk_factors=["Pre-filter only — awaiting full Claude analysis"],
+                                    sources_used=h.article_count,
+                                    ttl_hours=1,
+                                    signal_type="BREAKING_NEWS",
+                                )
+                            except Exception as we:
+                                logger.debug("[NEWS] Signal write error for %s: %s", h.symbol, we)
+                else:
+                    logger.info("[NEWS] No hot symbols this scan")
+            except Exception as e:
+                logger.warning("[NEWS] Fast news scan error: %s", e)
+
         # Load current research signals for intraday fundamental gate
         try:
             logger.debug("[LOOP] Loading active signals from DB")
@@ -898,7 +957,9 @@ def main():
                     ipo_monitor=ipo_monitor,
                     universe_candidates=_universe_candidates,
                     research_signals_map=_research_signals_map,
+                    hot_news_symbols=_hot_news_symbols,
                 )
+                _hot_news_symbols = []  # Consumed — reset until next news scan
                 _last_deep_research = datetime.now(timezone.utc)
             except Exception as e:
                 logger.exception("Unhandled error in deep research cycle: %s", e)
