@@ -111,9 +111,9 @@ class AlpacaExecutor:
         """
         try:
             if extended_hours and limit_price:
-                qty = math.floor(notional / limit_price * 1_000_000) / 1_000_000
+                qty = math.floor(notional / limit_price)  # whole shares only — fractional not allowed in extended hours
                 if qty <= 0:
-                    logger.warning("BUY %s skipped — computed qty=0 at limit_price=%.2f", symbol, limit_price)
+                    logger.warning("BUY %s skipped — computed qty=0 at limit_price=%.2f (notional=%.2f)", symbol, limit_price, notional)
                     return None
                 order_req = self._LimitOrderRequest(
                     symbol=symbol,
@@ -229,11 +229,14 @@ class AlpacaExecutor:
                 # Extended hours: must use limit orders. Fetch position qty if close_all.
                 if close_all:
                     pos = self.client.get_open_position(symbol)
-                    sell_qty = math.floor(float(pos.qty) * 1_000_000) / 1_000_000
+                    sell_qty = math.floor(float(pos.qty))  # whole shares only — fractional not allowed in extended hours
                 else:
                     if qty is None:
                         raise ValueError("Must specify qty or close_all=True")
-                    sell_qty = math.floor(qty * 1_000_000) / 1_000_000
+                    sell_qty = math.floor(qty)  # whole shares only
+                if sell_qty <= 0:
+                    logger.warning("SELL %s skipped — computed qty=0 (position is sub-share fractional)", symbol)
+                    return None
                 order_req = self._LimitOrderRequest(
                     symbol=symbol,
                     qty=sell_qty,
