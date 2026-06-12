@@ -1278,7 +1278,7 @@ def run_mini_loop(
 
         _atr = snapshot.atr_14 if snapshot else None
         verdict = risk.check(
-            decision, portfolio, positions_map,
+            decision, portfolio, positions,
             min_confidence=config.agent.min_confidence,
             atr=_atr,
             current_price=snapshot.current_price if snapshot else None,
@@ -1606,7 +1606,7 @@ def _drain_news_signals(
 
         _atr = snapshot.atr_14 if snapshot else None
         verdict = risk.check(
-            decision, portfolio, positions_map,
+            decision, portfolio, positions,
             min_confidence=config.agent.min_confidence,
             atr=_atr,
             current_price=snapshot.current_price if snapshot else None,
