@@ -328,7 +328,8 @@ def _make_news_handler(
             headline    = str(getattr(article, "headline", "") or "")
             summary     = str(getattr(article, "summary",  "") or "")
             source      = str(getattr(article, "source",   "") or "")
-            symbols     = list(getattr(article, "symbols",  []) or [])
+            # Strip exchange prefixes (e.g. "TSX:TFPM" → "TFPM") — Alpaca only accepts plain tickers
+            symbols     = [s.split(":")[-1] for s in (getattr(article, "symbols", []) or [])]
             url         = str(getattr(article, "url",       "") or "")
             created_at  = getattr(article, "created_at", None)
             pub_str     = created_at.isoformat() if created_at else datetime.now(timezone.utc).isoformat()
