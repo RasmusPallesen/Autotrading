@@ -572,30 +572,44 @@ def get_dynamic_symbols(
                         discovered_symbols.append(symbol)
                     logger.debug("[%s] Extended universe symbol admitted (conviction=%.0f%%)", symbol, conviction * 100)
 
-    # Add scanner discoveries not already in universe
+    # Add scanner/news discoveries not already in universe
     for symbol, signal in research_signals.items():
         if symbol not in full_universe:
-            conviction = float(signal.get("conviction", 0))
-            summary = signal.get("summary", "").lower()
-            is_scanner_hit = (
-                any(kw in summary for kw in [
-                    "gainer", "volume", "scanner", "active", "explosive",
-                    "surge", "spike", "rally", "turnaround", "upgrade",
-                    "breakout", "momentum", "jump", "soar", "beat",
-                    "record", "growth", "demand",
-                    # Intraday monitor keywords
-                    "intraday", "dip", "wave", "vwap", "capitulation",
-                    "universe discovery", "sector sympathy",
-                ])
-                or conviction >= 0.70
-            )
-            if conviction >= SCANNER_TRADE_THRESHOLD and is_scanner_hit:
-                active_symbols.append(symbol)
-                discovered_symbols.append(symbol)
-                logger.info(
-                    "Scanner discovery added: %s (conviction=%.0f%%)",
-                    symbol, conviction * 100,
+            conviction  = float(signal.get("conviction", 0))
+            signal_type = signal.get("signal_type", "")
+            summary     = signal.get("summary", "").lower()
+
+            if signal_type == "NEWS_SENTIMENT":
+                # News signals are pre-filtered by Claude — admit on conviction alone.
+                # The is_scanner_hit keyword check targets price/volume vocabulary
+                # ("surge", "vwap", etc.) that never appears in news summaries.
+                if conviction >= RESEARCH_GATE_THRESHOLD:
+                    active_symbols.append(symbol)
+                    discovered_symbols.append(symbol)
+                    logger.info(
+                        "News discovery added: %s (conviction=%.0f%%)",
+                        symbol, conviction * 100,
+                    )
+            else:
+                is_scanner_hit = (
+                    any(kw in summary for kw in [
+                        "gainer", "volume", "scanner", "active", "explosive",
+                        "surge", "spike", "rally", "turnaround", "upgrade",
+                        "breakout", "momentum", "jump", "soar", "beat",
+                        "record", "growth", "demand",
+                        # Intraday monitor keywords
+                        "intraday", "dip", "wave", "vwap", "capitulation",
+                        "universe discovery", "sector sympathy",
+                    ])
+                    or conviction >= 0.70
                 )
+                if conviction >= SCANNER_TRADE_THRESHOLD and is_scanner_hit:
+                    active_symbols.append(symbol)
+                    discovered_symbols.append(symbol)
+                    logger.info(
+                        "Scanner discovery added: %s (conviction=%.0f%%)",
+                        symbol, conviction * 100,
+                    )
 
     # Deduplicate while preserving order
     active_symbols = list(dict.fromkeys(active_symbols))
