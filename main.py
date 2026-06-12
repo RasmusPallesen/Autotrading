@@ -231,6 +231,20 @@ def is_market_open() -> bool:
     return _dtime(13, 30) <= now.time() <= _dtime(20, 0)
 
 
+def is_pre_market() -> bool:
+    """
+    Returns True during Alpaca-supported pre-market session (04:00–09:30 ET).
+    Pre-market: Mon-Fri 04:00–09:30 ET = 08:00–13:30 UTC.
+    Extended-hours orders require limit orders with extended_hours=True.
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    if now.weekday() >= 5:
+        return False
+    t = now.time()
+    return _dtime(8, 0) <= t < _dtime(13, 30)  # 08:00–13:29 UTC = 04:00–09:29 ET
+
+
 def is_post_market() -> bool:
     """
     Returns True during Alpaca-supported post-market session (16:00-20:00 ET).
@@ -245,9 +259,14 @@ def is_post_market() -> bool:
     return t >= _dtime(20, 0)  # 20:00-23:59 UTC = 16:00-20:00 ET
 
 
+def is_extended_hours() -> bool:
+    """True during pre-market (04:00–09:30 ET) or post-market (16:00–20:00 ET)."""
+    return is_pre_market() or is_post_market()
+
+
 def is_trading_hours() -> bool:
-    """Returns True during regular market hours OR post-market extended hours."""
-    return is_market_open() or is_post_market()
+    """Returns True during regular market hours, pre-market, or post-market."""
+    return is_market_open() or is_pre_market() or is_post_market()
 
 
 def find_weakest_position(positions: list, positions_map: dict,
@@ -1038,7 +1057,7 @@ def run_loop(
                 )
                 continue
 
-            _ext = is_post_market()
+            _ext = is_extended_hours()
             result = executor.buy(
                 symbol=decision.symbol,
                 notional=notional,
@@ -1081,7 +1100,7 @@ def run_loop(
                         decision.symbol,
                     )
                     continue
-                _ext = is_post_market()
+                _ext = is_extended_hours()
                 result = executor.sell(
                     symbol=decision.symbol,
                     close_all=True,
@@ -1255,7 +1274,7 @@ def run_mini_loop(
             continue
 
         price = data_fetcher.get_latest_price(symbol)
-        _ext = is_post_market()
+        _ext = is_extended_hours()
         if decision.action == "SELL" and symbol in positions_map:
             if symbol in locked_symbols:
                 logger.info("[%s] [MINI] SELL skipped — locked by user", symbol)
@@ -1427,7 +1446,7 @@ def _drain_hot_queue(
             )
             if verdict.approved:
                 price = data_fetcher.get_latest_price(symbol)
-                _ext = is_post_market()
+                _ext = is_extended_hours()
                 if decision.action == "BUY" and symbol not in positions_map:
                     stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
                     result = executor.buy(symbol, verdict.adjusted_notional, stop, target, extended_hours=_ext, limit_price=price if _ext else None)
@@ -1583,7 +1602,7 @@ def _drain_news_signals(
             continue
 
         price = data_fetcher.get_latest_price(symbol)
-        _ext = is_post_market()
+        _ext = is_extended_hours()
 
         if decision.action == "BUY" and symbol not in positions_map:
             if executor.is_pdt_blocked:
@@ -1789,7 +1808,7 @@ def main():
                 )
 
         else:
-            logger.info("Market closed -- agent paused (regular 15:30-22:00 CET, post-market 22:00-02:00 CET)")
+            logger.info("Market closed -- agent paused (pre-market 10:00-15:30 CET, regular 15:30-22:00 CET, post-market 22:00-02:00 CET)")
 
         if running:
             time.sleep(5)
