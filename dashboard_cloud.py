@@ -832,7 +832,7 @@ def load_news_signals() -> pd.DataFrame:
         AND id IN (SELECT MAX(id) FROM research_signals
                    WHERE signal_type IN ('NEWS', 'BREAKING_NEWS', 'NEWS_SENTIMENT')
                    AND expires_at > current_timestamp GROUP BY symbol)
-        ORDER BY conviction DESC LIMIT 10
+        ORDER BY ts DESC LIMIT 10
     """)
     if df.empty:
         return df
@@ -1573,6 +1573,14 @@ with tab_signals:
             article_url = next((p[len("Article: "):] for p in kp_list if str(p).startswith("Article: ")), "")
             read_link = f'<a href="{article_url}" target="_blank" rel="noopener" style="color:#f59e0b;font-size:0.75rem;white-space:nowrap;">Read →</a>' if article_url else ""
 
+            # Format timestamp
+            try:
+                import dateutil.parser as _dp
+                _ts = _dp.parse(str(row["ts"])).strftime("%H:%M") if row.get("ts") else ""
+            except Exception:
+                _ts = ""
+            ts_badge = f'<span style="color:#9ca3af;font-size:0.7rem;margin-left:6px;">{_ts}</span>' if _ts else ""
+
             st.markdown(f"""
             <div class="card" style="margin-bottom:2px;border-left:3px solid {border_color};">
                 <div class="card-header">
@@ -1584,6 +1592,7 @@ with tab_signals:
                         <span class="badge {sc_cls}">{row['sentiment']}</span>
                         <span class="badge badge-neutral">{badge_label}</span>
                         <span class="badge badge-pct">{row['conviction_pct']}%</span>
+                        {ts_badge}
                         {read_link}
                     </div>
                 </div>
