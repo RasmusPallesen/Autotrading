@@ -1368,11 +1368,16 @@ with tab_portfolio:
         """, unsafe_allow_html=True)
 
     if breakdown:
-        lines = "  \n".join(
-            f"Settles {b['date_str']}: **${b['amount']:,.2f}**"
+        lines = " &nbsp;|&nbsp; ".join(
+            f"Settles {b['date_str']}: <strong>${b['amount']:,.2f}</strong>"
             for b in breakdown
         )
-        st.caption(f"T+2 pending ${unsettled:,.2f} — {lines}")
+        st.markdown(
+            f'<div style="color:#f59e0b;font-size:0.82rem;margin-top:4px;">'
+            f'⏳ T+2 pending <strong>${unsettled:,.2f}</strong> &nbsp;—&nbsp; {lines}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
     # ── Benchmark comparison ───────────────────────────────────────
     if benchmarks:
