@@ -1453,7 +1453,7 @@ def _drain_hot_queue(
             # Risk check + execution (same path as normal loop)
             _atr = snapshot.atr_14 if snapshot else None
             verdict = risk.check(
-                decision, portfolio, positions_map,
+                decision, portfolio, positions,
                 min_confidence=config.agent.min_confidence,
                 atr=_atr,
                 current_price=snapshot.current_price if snapshot else None,
