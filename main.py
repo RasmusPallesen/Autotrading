@@ -1158,7 +1158,7 @@ def run_loop(
             # Check if it was actually executed this tick
             was_executed = decision.symbol in {
                 p["symbol"] for p in (positions or [])
-                if p not in (positions_map or {})
+                if p["symbol"] not in (positions_map or {})
             }
             if not was_executed and decision.action == "BUY":
                 high_urgency_blocked.append(decision.symbol)
