@@ -1567,8 +1567,25 @@ def _drain_news_signals(
                 continue
 
         if df is None or len(df) < 10:
-            logger.debug("[NEWS HOT] %s insufficient bars — skipping", symbol)
-            continue
+            # Pre-market fallback for high-conviction news signals:
+            # 1-min bars are sparse pre-open for micro/small-caps.
+            # If there's a meaningful pre-market move, fall back to daily
+            # bars so the AI can still evaluate with technical context.
+            if is_pre_market() and sig_type == "NEWS_SENTIMENT":
+                pm_move = data_fetcher.get_premarket_move(symbol)
+                if pm_move is not None and abs(pm_move) >= 0.05:
+                    logger.info(
+                        "[NEWS HOT] %s pre-market move %.1f%% — falling back to daily bars",
+                        symbol, pm_move * 100,
+                    )
+                    try:
+                        daily = data_fetcher.get_bars([symbol], lookback_bars=30, timeframe="1Day")
+                        df = daily.get(symbol)
+                    except Exception as e:
+                        logger.warning("[NEWS HOT] %s daily bar fallback failed: %s", symbol, e)
+            if df is None or len(df) < 5:
+                logger.debug("[NEWS HOT] %s insufficient bars — skipping", symbol)
+                continue
 
         snapshot = compute_signals(symbol, df)
         if not snapshot:

@@ -136,3 +136,25 @@ class AlpacaDataFetcher:
         except Exception as e:
             logger.warning("Could not fetch latest price for %s: %s", symbol, e)
             return None
+
+    def get_premarket_move(self, symbol: str) -> Optional[float]:
+        """
+        Return the pre-market price move as a fraction vs previous close.
+        Uses the Alpaca snapshot endpoint (prevDailyBar + latestTrade).
+        Returns e.g. 1.12 for +112%, -0.05 for -5%, or None on failure.
+        """
+        try:
+            from alpaca.data.requests import StockSnapshotRequest
+            req = StockSnapshotRequest(symbol_or_symbols=[symbol], feed="iex")
+            snaps = self.data_client.get_stock_snapshot(req)
+            snap = snaps.get(symbol) if isinstance(snaps, dict) else snaps
+            if snap is None:
+                return None
+            prev_close = float(snap.previous_daily_bar.close)
+            latest = float(snap.latest_trade.price)
+            if prev_close <= 0:
+                return None
+            return (latest - prev_close) / prev_close
+        except Exception as e:
+            logger.warning("Could not fetch pre-market move for %s: %s", symbol, e)
+            return None
