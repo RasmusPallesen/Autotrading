@@ -907,27 +907,54 @@ def render_chart(fig, height: int = None):
 
 
 def chart_positions_pnl(positions: list):
-    """Horizontal bar chart of positions sorted by unrealized P&L %."""
+    """Horizontal grouped bar chart: total unrealised P&L + today's change."""
     if not positions:
         return None
     pairs = sorted(
-        [(float(p.get("unrealized_plpc", 0)) * 100, p.get("symbol", "")) for p in positions]
+        [
+            (
+                float(p.get("unrealized_plpc", 0)) * 100,
+                float(p.get("change_today", 0)) * 100,
+                p.get("symbol", ""),
+            )
+            for p in positions
+        ]
     )
-    pcts, syms = zip(*pairs)
-    colors = ["#22c55e" if v >= 0 else "#ef4444" for v in pcts]
-    fig = go.Figure(go.Bar(
-        x=list(pcts), y=list(syms), orientation="h",
-        marker_color=colors,
-        text=[f"{v:+.2f}%" for v in pcts],
-        textposition="auto",
+    total_pcts  = [r[0] for r in pairs]
+    daily_pcts  = [r[1] for r in pairs]
+    syms        = [r[2] for r in pairs]
+    total_colors = ["#22c55e" if v >= 0 else "#ef4444" for v in total_pcts]
+    daily_colors = ["#16a34a" if v >= 0 else "#b91c1c" for v in daily_pcts]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name="Total P&L",
+        x=total_pcts, y=syms, orientation="h",
+        marker_color=total_colors,
+        text=[f"{v:+.2f}%" for v in total_pcts],
+        textposition="outside",
+        cliponaxis=False,
+        textfont=dict(family=_MONO, size=11, color="#f9fafb"),
+    ))
+    fig.add_trace(go.Bar(
+        name="Today",
+        x=daily_pcts, y=syms, orientation="h",
+        marker_color=daily_colors,
+        opacity=0.75,
+        text=[f"{v:+.2f}%" for v in daily_pcts],
+        textposition="outside",
+        cliponaxis=False,
         textfont=dict(family=_MONO, size=11, color="#f9fafb"),
     ))
     fig.update_layout(**_base_layout(
-        margin=dict(l=4, r=4, t=6, b=6),
-        height=max(160, len(positions) * 36),
+        barmode="group",
+        margin=dict(l=4, r=80, t=6, b=6),
+        height=max(180, len(positions) * 52),
         xaxis=dict(gridcolor=_GRID, zerolinecolor="#374151",
                    tickfont=dict(family=_MONO, size=10)),
         yaxis=dict(tickfont=dict(family=_MONO, size=12, color="#f9fafb")),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01,
+                    font=dict(family=_MONO, size=10, color="#9ca3af")),
     ))
     return fig
 

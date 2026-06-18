@@ -119,6 +119,8 @@ class AlpacaDataFetcher:
                 "market_value": float(p.market_value),
                 "unrealized_pl": float(p.unrealized_pl),
                 "unrealized_plpc": float(p.unrealized_plpc),
+                "change_today": float(p.change_today or 0),
+                "unrealized_intraday_plpc": float(p.unrealized_intraday_plpc or 0),
                 "side": p.side.value,
             }
             for p in positions
