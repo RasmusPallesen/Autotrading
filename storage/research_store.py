@@ -48,6 +48,10 @@ class ResearchStore:
             password=unquote(parsed.password or ""),
             sslmode="require",
             connect_timeout=10,
+            keepalives=1,
+            keepalives_idle=60,
+            keepalives_interval=10,
+            keepalives_count=5,
         )
         self.conn.autocommit = True
         # Prevent runaway queries from blocking the research loop indefinitely
@@ -212,31 +216,55 @@ class ResearchStore:
         )
         return self._fetchall(sql, (since_iso, now))
 
-    def _execute(self, sql: str, params: tuple):
+    def _reconnect(self):
         try:
-            if self._backend == "postgres":
-                with self.conn.cursor() as cur:
-                    cur.execute(sql, params)
-            else:
-                self.conn.execute(sql.replace("%s", "?"), params)
-                self.conn.commit()
-        except Exception as e:
-            logger.error("ResearchStore write error: %s", e)
+            self.conn.close()
+        except Exception:
+            pass
+        if self._backend == "postgres":
+            self._setup_postgres()
+        else:
+            self._setup_sqlite()
+        logger.info("ResearchStore reconnected to %s", self._backend)
+
+    def _execute(self, sql: str, params: tuple):
+        for attempt in range(2):
+            try:
+                if self._backend == "postgres":
+                    with self.conn.cursor() as cur:
+                        cur.execute(sql, params)
+                else:
+                    self.conn.execute(sql.replace("%s", "?"), params)
+                    self.conn.commit()
+                return
+            except Exception as e:
+                if attempt == 0 and "closed" in str(e).lower():
+                    logger.warning("ResearchStore: connection closed — reconnecting")
+                    self._reconnect()
+                    continue
+                logger.error("ResearchStore write error: %s", e)
+                return
 
     def _fetchall(self, sql: str, params: tuple) -> List[dict]:
-        try:
-            if self._backend == "postgres":
-                import psycopg2.extras
-                with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute(sql, params)
-                    return [dict(r) for r in cur.fetchall()]
-            else:
-                cur = self.conn.execute(sql.replace("%s", "?"), params)
-                cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, row)) for row in cur.fetchall()]
-        except Exception as e:
-            logger.error("ResearchStore read error: %s", e)
-            return []
+        for attempt in range(2):
+            try:
+                if self._backend == "postgres":
+                    import psycopg2.extras
+                    with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                        cur.execute(sql, params)
+                        return [dict(r) for r in cur.fetchall()]
+                else:
+                    cur = self.conn.execute(sql.replace("%s", "?"), params)
+                    cols = [d[0] for d in cur.description]
+                    return [dict(zip(cols, row)) for row in cur.fetchall()]
+            except Exception as e:
+                if attempt == 0 and "closed" in str(e).lower():
+                    logger.warning("ResearchStore: connection closed — reconnecting for read")
+                    self._reconnect()
+                    continue
+                logger.error("ResearchStore read error: %s", e)
+                return []
+        return []
 
     def close(self):
         self.conn.close()
