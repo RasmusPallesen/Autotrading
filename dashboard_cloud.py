@@ -1824,6 +1824,11 @@ with tab_signals:
                       "WATCH": "badge-watch"}.get(row["recommended_action"], "badge-hold")
             key     = f"research:{row['symbol']}:{idx}"
             is_open = st.session_state.selected == key
+            try:
+                _ts = row["ts"].strftime("%H:%M") if row.get("ts") is not None and pd.notna(row["ts"]) else ""
+            except Exception:
+                _ts = ""
+            ts_badge = f'<span style="color:#9ca3af;font-size:0.7rem;margin-left:6px;">{_ts}</span>' if _ts else ""
             st.markdown(f"""
             <div class="card" style="margin-bottom:2px;">
                 <div class="card-header">
@@ -1835,6 +1840,7 @@ with tab_signals:
                         <span class="badge {sc_cls}">{row["sentiment"]}</span>
                         <span class="badge {ac_cls}">{row["recommended_action"]}</span>
                         <span class="badge badge-pct">{row["conviction_pct"]}%</span>
+                        {ts_badge}
                     </div>
                 </div>
                 <div class="card-text">{str(row["summary"])[:160]}</div>
