@@ -1079,6 +1079,7 @@ def run_loop(
                 take_profit_price=take_profit,
                 extended_hours=_ext,
                 limit_price=current_price if _ext else None,
+                current_price=current_price,
             )
             if result and not hasattr(result, 'is_pdt'):
                 store.log_execution(
@@ -1303,7 +1304,7 @@ def run_mini_loop(
             logger.info("[MINI] SELL %s executed: %s", symbol, result)
         elif decision.action == "BUY" and symbol not in positions_map:
             stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
-            result = executor.buy(symbol, verdict.adjusted_notional, stop, target, extended_hours=_ext, limit_price=price if _ext else None)
+            result = executor.buy(symbol, verdict.adjusted_notional, stop, target, extended_hours=_ext, limit_price=price if _ext else None, current_price=price)
             store.log_execution(
                 order_id=result.get("order_id", "") if isinstance(result, dict) else "",
                 symbol=symbol,
@@ -1463,7 +1464,7 @@ def _drain_hot_queue(
                 _ext = is_extended_hours()
                 if decision.action == "BUY" and symbol not in positions_map:
                     stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
-                    result = executor.buy(symbol, verdict.adjusted_notional, stop, target, extended_hours=_ext, limit_price=price if _ext else None)
+                    result = executor.buy(symbol, verdict.adjusted_notional, stop, target, extended_hours=_ext, limit_price=price if _ext else None, current_price=price)
                     store.log_execution(
                         order_id=result.get("order_id", "") if isinstance(result, dict) else "",
                         symbol=symbol,
@@ -1642,6 +1643,7 @@ def _drain_news_signals(
             result = executor.buy(
                 symbol, verdict.adjusted_notional, stop, target,
                 extended_hours=_ext, limit_price=price if _ext else None,
+                current_price=price,
             )
             if result and not hasattr(result, "is_pdt"):
                 store.log_execution(
@@ -1666,6 +1668,100 @@ def _drain_news_signals(
                     notional=float(positions_map[symbol]["market_value"]),
                 )
                 logger.info("[NEWS HOT] SELL %s executed: %s", symbol, result)
+
+
+def _check_software_stops(
+    data_fetcher: AlpacaDataFetcher,
+    executor: AlpacaExecutor,
+    risk: RiskManager,
+    store: TradeStore,
+    locked_symbols: frozenset = frozenset(),
+) -> None:
+    """
+    Software stop-loss / take-profit monitor. Runs every tick during all
+    trading hours (regular + extended).
+
+    Purpose: extended-hours positions cannot carry an Alpaca bracket order, so
+    without this they have zero protection until the regular-hours open. This
+    monitor compares each held position's live price against the stop/target
+    recorded on its most recent BUY execution and exits when breached —
+    crucially bypassing the is_market_open() gate that blocks all other
+    held-position sells, so a pre/post-market entry can actually be stopped out.
+
+    Regular-hours positions opened with a broker bracket are unaffected: their
+    stop/target legs show as open orders, and executor.sell() skips any symbol
+    with a pending order, so the monitor never fights or duplicates a live
+    bracket. It is a backstop there and the primary protection in extended hours.
+    """
+    if executor.is_pdt_blocked:
+        return
+    try:
+        positions = data_fetcher.get_positions()
+    except Exception as e:
+        logger.debug("[STOP-MON] positions fetch failed: %s", e)
+        return
+    if not positions:
+        return
+
+    held = [p["symbol"] for p in positions]
+    try:
+        stops = store.get_latest_stops(held) if store else {}
+    except Exception as e:
+        logger.debug("[STOP-MON] stops fetch failed: %s", e)
+        return
+
+    _ext = is_extended_hours()
+    for pos in positions:
+        symbol = pos["symbol"]
+        if symbol in locked_symbols:
+            continue
+        levels = stops.get(symbol)
+        if not levels:
+            continue
+        stop_px = levels.get("stop_loss")
+        tp_px = levels.get("take_profit")
+        if stop_px is None and tp_px is None:
+            continue
+        try:
+            price = data_fetcher.get_latest_price(symbol)
+        except Exception:
+            price = None
+        if not price:
+            continue
+
+        reason = None
+        if stop_px is not None and price <= stop_px:
+            reason = f"stop-loss (price ${price:.2f} <= ${stop_px:.2f})"
+        elif tp_px is not None and price >= tp_px:
+            reason = f"take-profit (price ${price:.2f} >= ${tp_px:.2f})"
+        if not reason:
+            continue
+
+        logger.info("[STOP-MON] %s exit triggered — %s%s", symbol, reason,
+                    " [extended hours]" if _ext else "")
+        try:
+            result = executor.sell(
+                symbol, close_all=True,
+                extended_hours=_ext, limit_price=price if _ext else None,
+            )
+        except Exception as e:
+            logger.warning("[STOP-MON] %s sell error: %s", symbol, e)
+            continue
+        if result and not hasattr(result, "is_pdt"):
+            if isinstance(result, dict) and result.get("skipped") == "already_pending":
+                # A broker bracket leg is already working this exit — leave it be.
+                continue
+            try:
+                sold_value = float(pos.get("market_value") or 0)
+                risk.record_sale(sold_value)
+                store.log_execution(
+                    order_id=result.get("order_id", "") if isinstance(result, dict) else "",
+                    symbol=symbol, side="SELL", notional=sold_value,
+                    extra={"source": "stop_monitor", "reason": reason},
+                )
+            except Exception as e:
+                logger.warning("[STOP-MON] %s log error: %s", symbol, e)
+            logger.info("[STOP-MON] %s exited: %s", symbol, result)
 
 
 def main():
@@ -1837,6 +1933,14 @@ def main():
                     locked_symbols=frozenset(_hot_locked),
                     bar_stream=bar_stream,
                 )
+
+            # Software stop-monitor: protects extended-hours entries (no broker
+            # bracket possible) and backstops all positions. Runs every tick in
+            # regular AND extended hours, bypassing the market-hours sell gate.
+            _check_software_stops(
+                data_fetcher, executor, risk, store,
+                locked_symbols=frozenset(_hot_locked),
+            )
 
         else:
             logger.info("Market closed -- agent paused (pre-market 10:00-15:30 CET, regular 15:30-22:00 CET, post-market 22:00-02:00 CET)")
