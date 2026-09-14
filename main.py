@@ -344,9 +344,9 @@ def should_opportunity_sell(
     symbol = weakest_position.get("symbol", "")
     pnl_pct = float(weakest_position.get("unrealized_plpc", 0)) * 100
 
-    # CHANGED: Only protect big winners (>20%), allow rotation of smaller winners
-    if pnl_pct > 20.0:
-        return False, f"{symbol} is up {pnl_pct:.1f}% -- protecting large winner"
+    # Protect any winner >10% (raised from >20%) — don't churn healthy holdings.
+    if pnl_pct > 10.0:
+        return False, f"{symbol} is up {pnl_pct:.1f}% -- protecting winner"
 
     # REMOVED: Earnings beat protection (counter to short-term cycling)
     # Short-term trading wants to participate in volatility, not avoid it
@@ -385,6 +385,7 @@ def execute_opportunity_sell(
     data_fetcher: AlpacaDataFetcher,
     earnings_events: dict = None,
     locked_symbols: frozenset = frozenset(),
+    source: str = "watchlist",
 ) -> tuple:
     """
     If at max positions and a new BUY signal arrives for an unheld symbol,
@@ -400,6 +401,17 @@ def execute_opportunity_sell(
     symbol_held = decision.symbol in positions_map
 
     if current_count < config.risk.max_open_positions or symbol_held:
+        return positions, positions_map
+
+    # A news-sourced buy must not churn the portfolio unless it is exceptionally
+    # high-conviction — news is the noisiest source and shouldn't force-liquidate
+    # an existing holding on a routine signal.
+    if source == "news" and decision.confidence < 0.80:
+        logger.info(
+            "Opportunity sell skipped — news-sourced buy for %s (conf %.0f%%) "
+            "below 80%% may not displace a holding",
+            decision.symbol, decision.confidence * 100,
+        )
         return positions, positions_map
 
     sellable = [p for p in positions if p["symbol"] not in locked_symbols]
@@ -445,6 +457,7 @@ def execute_opportunity_sell(
         symbol=weakest["symbol"],
         side="SELL",
         notional=sold_val,
+        extra={"source": "opportunity_sell", "for_symbol": decision.symbol},
     )
     store.log_decision(
         symbol=weakest["symbol"],
@@ -923,6 +936,12 @@ def run_loop(
     # 9. Execute SELLs first to free up cash, then BUYs ranked by conviction
     for decision in sells + buys:
         is_discovery = decision.symbol in discovered_symbols
+        _sig = research_signals.get(decision.symbol, {})
+        _src = (
+            "news" if _sig.get("signal_type") == "NEWS_SENTIMENT"
+            else "scanner" if is_discovery
+            else "watchlist"
+        )
 
         if is_discovery:
             logger.info(
@@ -1035,6 +1054,7 @@ def run_loop(
                 data_fetcher=data_fetcher,
                 earnings_events=earnings_events,
                 locked_symbols=frozenset(locked_symbols),
+                source=_src,
             )
 
         # ── Risk verdict (always sees post-sell portfolio state) ─────────────
@@ -1109,6 +1129,7 @@ def run_loop(
                     notional=notional,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
+                    extra={"source": _src},
                 )
                 if is_discovery:
                     logger.info(
@@ -1155,11 +1176,13 @@ def run_loop(
                         symbol=decision.symbol,
                         side="SELL",
                         notional=sold_value,
+                        extra={"source": _src, "fill_price": data_fetcher.get_latest_price(decision.symbol)},
                     )
                 elif hasattr(result, 'is_pdt') and result.is_pdt:
                     logger.warning(
-                        "[%s] SELL blocked by PDT -- position retained, "
-                        "stop-loss bracket at Alpaca remains active",
+                        "[%s] SELL blocked by PDT -- position retained; "
+                        "regular-hours entries carry a broker bracket, "
+                        "extended-hours entries rely on the software stop-monitor",
                         decision.symbol,
                     )
             else:
@@ -1320,6 +1343,7 @@ def run_mini_loop(
                 symbol=symbol,
                 side="SELL",
                 notional=float(positions_map[symbol]["market_value"]),
+                extra={"source": "mini", "fill_price": price},
             )
             logger.info("[MINI] SELL %s executed: %s", symbol, result)
         elif decision.action == "BUY" and symbol not in positions_map:
@@ -1332,6 +1356,7 @@ def run_mini_loop(
                 notional=verdict.adjusted_notional,
                 stop_loss=stop,
                 take_profit=target,
+                extra={"source": "mini"},
             )
             logger.info("[MINI] BUY %s executed: %s", symbol, result)
 
@@ -1492,6 +1517,7 @@ def _drain_hot_queue(
                         notional=verdict.adjusted_notional,
                         stop_loss=stop,
                         take_profit=target,
+                        extra={"source": "hot_bar"},
                     )
                     logger.info("[HOT PATH] BUY %s executed: %s", symbol, result)
                 elif decision.action == "SELL" and symbol in positions_map:
@@ -1506,6 +1532,7 @@ def _drain_hot_queue(
                             symbol=symbol,
                             side="SELL",
                             notional=float(positions_map[symbol]["market_value"]),
+                            extra={"source": "hot_bar", "fill_price": price},
                         )
                         logger.info("[HOT PATH] SELL %s executed: %s", symbol, result)
             else:
@@ -1702,6 +1729,7 @@ def _drain_news_signals(
                 store.log_execution(
                     order_id=result.get("order_id", ""), symbol=symbol, side="SELL",
                     notional=float(positions_map[symbol]["market_value"]),
+                    extra={"source": "news_hot", "fill_price": price},
                 )
                 logger.info("[NEWS HOT] SELL %s executed: %s", symbol, result)
 
