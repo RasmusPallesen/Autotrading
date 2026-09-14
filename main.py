@@ -611,8 +611,8 @@ def get_dynamic_symbols(
                 # catalyst quality. The is_scanner_hit keyword check targets
                 # price/volume vocabulary ("surge", "vwap", etc.) that never
                 # appears in news summaries.
-                catalyst = str(signal.get("catalyst_type", "GENERAL_NEWS") or "GENERAL_NEWS")
-                if catalyst not in TRADEABLE_CATALYSTS:
+                catalyst = signal.get("catalyst_type")  # None if column not yet migrated
+                if catalyst is not None and catalyst not in TRADEABLE_CATALYSTS:
                     logger.debug(
                         "News discovery skipped (watch-only catalyst %s): %s", catalyst, symbol,
                     )
@@ -1577,12 +1577,13 @@ def _drain_news_signals(
         symbol   = sig.get("symbol", "")
         conv     = float(sig.get("conviction", 0))
         sig_type = sig.get("signal_type", "")
-        catalyst = str(sig.get("catalyst_type", "GENERAL_NEWS") or "GENERAL_NEWS")
+        catalyst = sig.get("catalyst_type")  # None if column not yet migrated
 
         if conv < NEWS_HOT_THRESHOLD:
             continue
-        if catalyst not in TRADEABLE_CATALYSTS:
+        if catalyst is not None and catalyst not in TRADEABLE_CATALYSTS:
             # GENERAL_NEWS and other watch-only catalysts never trigger a trade.
+            # (When catalyst is unknown/unmigrated, fall back to conviction gating.)
             continue
         if symbol in locked_symbols:
             continue

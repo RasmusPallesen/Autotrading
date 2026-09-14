@@ -34,6 +34,7 @@ class ResearchStore:
             self._setup_sqlite()
         self._create_table()
         self._has_signal_type = self._check_signal_type_column()
+        self._ensure_catalyst_column()
         self._has_catalyst_type = self._column_exists("catalyst_type")
 
     def _setup_postgres(self):
@@ -128,6 +129,35 @@ class ResearchStore:
         except Exception as e:
             logger.warning("ResearchStore: could not check signal_type column: %s", e)
             return False
+
+    def _ensure_catalyst_column(self):
+        """
+        Best-effort add of the catalyst_type column to an existing table.
+        CREATE TABLE IF NOT EXISTS won't add a column to a table that already
+        exists (the live case), so attempt a non-destructive ALTER. If the app
+        user lacks ALTER privilege it fails harmlessly and the trader falls back
+        to conviction-only news admission until the column is added manually.
+        """
+        if self._column_exists("catalyst_type"):
+            return
+        try:
+            if self._backend == "postgres":
+                with self.conn.cursor() as cur:
+                    cur.execute(
+                        "ALTER TABLE research_signals "
+                        "ADD COLUMN IF NOT EXISTS catalyst_type TEXT DEFAULT 'GENERAL_NEWS'"
+                    )
+            else:
+                self.conn.execute(
+                    "ALTER TABLE research_signals ADD COLUMN catalyst_type TEXT DEFAULT 'GENERAL_NEWS'"
+                )
+                self.conn.commit()
+            logger.info("ResearchStore: added catalyst_type column")
+        except Exception as e:
+            logger.warning(
+                "ResearchStore: could not add catalyst_type column (%s); "
+                "news catalyst gating falls back to conviction-only until added.", e,
+            )
 
     def _column_exists(self, column: str) -> bool:
         """Generic check for whether a column exists on research_signals (no DDL)."""
