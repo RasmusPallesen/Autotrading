@@ -53,8 +53,22 @@ MINI_INTERVAL  = 180  # seconds — re-evaluate held positions (3 min; hot path 
 SWEEP_INTERVAL = 900  # seconds — full symbol sweep (hot path is primary discovery)
 
 # News hot-path: immediately evaluate symbols with fresh high-conviction news signals
-NEWS_HOT_THRESHOLD = 0.65   # min conviction to trigger immediate eval
+NEWS_HOT_THRESHOLD = 0.70   # min conviction to trigger immediate eval (raised 0.65→0.70 to match news agent BUY bar)
 NEWS_HOT_OVERLAP   = 10     # seconds of lookback overlap to avoid boundary gaps
+
+# News de-risk gates
+NEWS_SWEEP_THRESHOLD = 0.55  # min conviction for a news discovery to enter the sweep (above scanner's 0.50)
+# Only these Claude-classified catalysts are tradeable. GENERAL_NEWS is
+# watch-only (shown on dashboard, never admitted to trading) because it is the
+# noisiest, lowest-signal category.
+TRADEABLE_CATALYSTS = frozenset({
+    "FDA_EVENT", "EARNINGS_SURPRISE", "ANALYST_ACTION",
+    "PARTNERSHIP", "GUIDANCE_CHANGE", "LEGAL_RISK",
+})
+# Chase guard: don't buy a news name that has already run up this much on the
+# day (measured vs previous close). By the time the news feed surfaces the
+# story the move is often mostly done — chasing it buys the top (CUPR/UUUU).
+NEWS_CHASE_LIMIT = 0.15  # 15%
 
 # ── Dynamic stream subscriptions ─────────────────────────────────────────────
 # Symbols discovered by scanners that are not in the core watchlist.
@@ -330,9 +344,9 @@ def should_opportunity_sell(
     symbol = weakest_position.get("symbol", "")
     pnl_pct = float(weakest_position.get("unrealized_plpc", 0)) * 100
 
-    # CHANGED: Only protect big winners (>20%), allow rotation of smaller winners
-    if pnl_pct > 20.0:
-        return False, f"{symbol} is up {pnl_pct:.1f}% -- protecting large winner"
+    # Protect any winner >10% (raised from >20%) — don't churn healthy holdings.
+    if pnl_pct > 10.0:
+        return False, f"{symbol} is up {pnl_pct:.1f}% -- protecting winner"
 
     # REMOVED: Earnings beat protection (counter to short-term cycling)
     # Short-term trading wants to participate in volatility, not avoid it
@@ -371,6 +385,7 @@ def execute_opportunity_sell(
     data_fetcher: AlpacaDataFetcher,
     earnings_events: dict = None,
     locked_symbols: frozenset = frozenset(),
+    source: str = "watchlist",
 ) -> tuple:
     """
     If at max positions and a new BUY signal arrives for an unheld symbol,
@@ -386,6 +401,17 @@ def execute_opportunity_sell(
     symbol_held = decision.symbol in positions_map
 
     if current_count < config.risk.max_open_positions or symbol_held:
+        return positions, positions_map
+
+    # A news-sourced buy must not churn the portfolio unless it is exceptionally
+    # high-conviction — news is the noisiest source and shouldn't force-liquidate
+    # an existing holding on a routine signal.
+    if source == "news" and decision.confidence < 0.80:
+        logger.info(
+            "Opportunity sell skipped — news-sourced buy for %s (conf %.0f%%) "
+            "below 80%% may not displace a holding",
+            decision.symbol, decision.confidence * 100,
+        )
         return positions, positions_map
 
     sellable = [p for p in positions if p["symbol"] not in locked_symbols]
@@ -431,6 +457,7 @@ def execute_opportunity_sell(
         symbol=weakest["symbol"],
         side="SELL",
         notional=sold_val,
+        extra={"source": "opportunity_sell", "for_symbol": decision.symbol},
     )
     store.log_decision(
         symbol=weakest["symbol"],
@@ -580,15 +607,21 @@ def get_dynamic_symbols(
             summary     = signal.get("summary", "").lower()
 
             if signal_type == "NEWS_SENTIMENT":
-                # News signals are pre-filtered by Claude — admit on conviction alone.
-                # The is_scanner_hit keyword check targets price/volume vocabulary
-                # ("surge", "vwap", etc.) that never appears in news summaries.
-                if conviction >= RESEARCH_GATE_THRESHOLD:
+                # News signals are pre-filtered by Claude — admit on conviction and
+                # catalyst quality. The is_scanner_hit keyword check targets
+                # price/volume vocabulary ("surge", "vwap", etc.) that never
+                # appears in news summaries.
+                catalyst = signal.get("catalyst_type")  # None if column not yet migrated
+                if catalyst is not None and catalyst not in TRADEABLE_CATALYSTS:
+                    logger.debug(
+                        "News discovery skipped (watch-only catalyst %s): %s", catalyst, symbol,
+                    )
+                elif conviction >= NEWS_SWEEP_THRESHOLD:
                     active_symbols.append(symbol)
                     discovered_symbols.append(symbol)
                     logger.info(
-                        "News discovery added: %s (conviction=%.0f%%)",
-                        symbol, conviction * 100,
+                        "News discovery added: %s (conviction=%.0f%%, catalyst=%s)",
+                        symbol, conviction * 100, catalyst,
                     )
             else:
                 is_scanner_hit = (
@@ -903,6 +936,12 @@ def run_loop(
     # 9. Execute SELLs first to free up cash, then BUYs ranked by conviction
     for decision in sells + buys:
         is_discovery = decision.symbol in discovered_symbols
+        _sig = research_signals.get(decision.symbol, {})
+        _src = (
+            "news" if _sig.get("signal_type") == "NEWS_SENTIMENT"
+            else "scanner" if is_discovery
+            else "watchlist"
+        )
 
         if is_discovery:
             logger.info(
@@ -1015,6 +1054,7 @@ def run_loop(
                 data_fetcher=data_fetcher,
                 earnings_events=earnings_events,
                 locked_symbols=frozenset(locked_symbols),
+                source=_src,
             )
 
         # ── Risk verdict (always sees post-sell portfolio state) ─────────────
@@ -1079,6 +1119,7 @@ def run_loop(
                 take_profit_price=take_profit,
                 extended_hours=_ext,
                 limit_price=current_price if _ext else None,
+                current_price=current_price,
             )
             if result and not hasattr(result, 'is_pdt'):
                 store.log_execution(
@@ -1088,6 +1129,7 @@ def run_loop(
                     notional=notional,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
+                    extra={"source": _src},
                 )
                 if is_discovery:
                     logger.info(
@@ -1134,11 +1176,13 @@ def run_loop(
                         symbol=decision.symbol,
                         side="SELL",
                         notional=sold_value,
+                        extra={"source": _src, "fill_price": data_fetcher.get_latest_price(decision.symbol)},
                     )
                 elif hasattr(result, 'is_pdt') and result.is_pdt:
                     logger.warning(
-                        "[%s] SELL blocked by PDT -- position retained, "
-                        "stop-loss bracket at Alpaca remains active",
+                        "[%s] SELL blocked by PDT -- position retained; "
+                        "regular-hours entries carry a broker bracket, "
+                        "extended-hours entries rely on the software stop-monitor",
                         decision.symbol,
                     )
             else:
@@ -1299,11 +1343,12 @@ def run_mini_loop(
                 symbol=symbol,
                 side="SELL",
                 notional=float(positions_map[symbol]["market_value"]),
+                extra={"source": "mini", "fill_price": price},
             )
             logger.info("[MINI] SELL %s executed: %s", symbol, result)
         elif decision.action == "BUY" and symbol not in positions_map:
             stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
-            result = executor.buy(symbol, verdict.adjusted_notional, stop, target, extended_hours=_ext, limit_price=price if _ext else None)
+            result = executor.buy(symbol, verdict.adjusted_notional, stop, target, extended_hours=_ext, limit_price=price if _ext else None, current_price=price)
             store.log_execution(
                 order_id=result.get("order_id", "") if isinstance(result, dict) else "",
                 symbol=symbol,
@@ -1311,6 +1356,7 @@ def run_mini_loop(
                 notional=verdict.adjusted_notional,
                 stop_loss=stop,
                 take_profit=target,
+                extra={"source": "mini"},
             )
             logger.info("[MINI] BUY %s executed: %s", symbol, result)
 
@@ -1463,7 +1509,7 @@ def _drain_hot_queue(
                 _ext = is_extended_hours()
                 if decision.action == "BUY" and symbol not in positions_map:
                     stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
-                    result = executor.buy(symbol, verdict.adjusted_notional, stop, target, extended_hours=_ext, limit_price=price if _ext else None)
+                    result = executor.buy(symbol, verdict.adjusted_notional, stop, target, extended_hours=_ext, limit_price=price if _ext else None, current_price=price)
                     store.log_execution(
                         order_id=result.get("order_id", "") if isinstance(result, dict) else "",
                         symbol=symbol,
@@ -1471,6 +1517,7 @@ def _drain_hot_queue(
                         notional=verdict.adjusted_notional,
                         stop_loss=stop,
                         take_profit=target,
+                        extra={"source": "hot_bar"},
                     )
                     logger.info("[HOT PATH] BUY %s executed: %s", symbol, result)
                 elif decision.action == "SELL" and symbol in positions_map:
@@ -1485,6 +1532,7 @@ def _drain_hot_queue(
                             symbol=symbol,
                             side="SELL",
                             notional=float(positions_map[symbol]["market_value"]),
+                            extra={"source": "hot_bar", "fill_price": price},
                         )
                         logger.info("[HOT PATH] SELL %s executed: %s", symbol, result)
             else:
@@ -1529,8 +1577,13 @@ def _drain_news_signals(
         symbol   = sig.get("symbol", "")
         conv     = float(sig.get("conviction", 0))
         sig_type = sig.get("signal_type", "")
+        catalyst = sig.get("catalyst_type")  # None if column not yet migrated
 
         if conv < NEWS_HOT_THRESHOLD:
+            continue
+        if catalyst is not None and catalyst not in TRADEABLE_CATALYSTS:
+            # GENERAL_NEWS and other watch-only catalysts never trigger a trade.
+            # (When catalyst is unknown/unmigrated, fall back to conviction gating.)
             continue
         if symbol in locked_symbols:
             continue
@@ -1638,15 +1691,28 @@ def _drain_news_signals(
         if decision.action == "BUY" and symbol not in positions_map:
             if executor.is_pdt_blocked:
                 continue
+            # Chase guard — skip if the stock has already run up too far today.
+            try:
+                day_move = data_fetcher.get_premarket_move(symbol)
+            except Exception:
+                day_move = None
+            if day_move is not None and day_move >= NEWS_CHASE_LIMIT:
+                logger.info(
+                    "[NEWS HOT] %s BUY skipped — already +%.0f%% on the day (chase guard, limit %.0f%%)",
+                    symbol, day_move * 100, NEWS_CHASE_LIMIT * 100,
+                )
+                continue
             stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
             result = executor.buy(
                 symbol, verdict.adjusted_notional, stop, target,
                 extended_hours=_ext, limit_price=price if _ext else None,
+                current_price=price,
             )
             if result and not hasattr(result, "is_pdt"):
                 store.log_execution(
                     order_id=result["order_id"], symbol=symbol, side="BUY",
                     notional=verdict.adjusted_notional, stop_loss=stop, take_profit=target,
+                    extra={"source": "news_hot", "catalyst": catalyst},
                 )
                 logger.info("[NEWS HOT] BUY %s executed: %s", symbol, result)
 
@@ -1664,8 +1730,103 @@ def _drain_news_signals(
                 store.log_execution(
                     order_id=result.get("order_id", ""), symbol=symbol, side="SELL",
                     notional=float(positions_map[symbol]["market_value"]),
+                    extra={"source": "news_hot", "fill_price": price},
                 )
                 logger.info("[NEWS HOT] SELL %s executed: %s", symbol, result)
+
+
+def _check_software_stops(
+    data_fetcher: AlpacaDataFetcher,
+    executor: AlpacaExecutor,
+    risk: RiskManager,
+    store: TradeStore,
+    locked_symbols: frozenset = frozenset(),
+) -> None:
+    """
+    Software stop-loss / take-profit monitor. Runs every tick during all
+    trading hours (regular + extended).
+
+    Purpose: extended-hours positions cannot carry an Alpaca bracket order, so
+    without this they have zero protection until the regular-hours open. This
+    monitor compares each held position's live price against the stop/target
+    recorded on its most recent BUY execution and exits when breached —
+    crucially bypassing the is_market_open() gate that blocks all other
+    held-position sells, so a pre/post-market entry can actually be stopped out.
+
+    Regular-hours positions opened with a broker bracket are unaffected: their
+    stop/target legs show as open orders, and executor.sell() skips any symbol
+    with a pending order, so the monitor never fights or duplicates a live
+    bracket. It is a backstop there and the primary protection in extended hours.
+    """
+    if executor.is_pdt_blocked:
+        return
+    try:
+        positions = data_fetcher.get_positions()
+    except Exception as e:
+        logger.debug("[STOP-MON] positions fetch failed: %s", e)
+        return
+    if not positions:
+        return
+
+    held = [p["symbol"] for p in positions]
+    try:
+        stops = store.get_latest_stops(held) if store else {}
+    except Exception as e:
+        logger.debug("[STOP-MON] stops fetch failed: %s", e)
+        return
+
+    _ext = is_extended_hours()
+    for pos in positions:
+        symbol = pos["symbol"]
+        if symbol in locked_symbols:
+            continue
+        levels = stops.get(symbol)
+        if not levels:
+            continue
+        stop_px = levels.get("stop_loss")
+        tp_px = levels.get("take_profit")
+        if stop_px is None and tp_px is None:
+            continue
+        try:
+            price = data_fetcher.get_latest_price(symbol)
+        except Exception:
+            price = None
+        if not price:
+            continue
+
+        reason = None
+        if stop_px is not None and price <= stop_px:
+            reason = f"stop-loss (price ${price:.2f} <= ${stop_px:.2f})"
+        elif tp_px is not None and price >= tp_px:
+            reason = f"take-profit (price ${price:.2f} >= ${tp_px:.2f})"
+        if not reason:
+            continue
+
+        logger.info("[STOP-MON] %s exit triggered — %s%s", symbol, reason,
+                    " [extended hours]" if _ext else "")
+        try:
+            result = executor.sell(
+                symbol, close_all=True,
+                extended_hours=_ext, limit_price=price if _ext else None,
+            )
+        except Exception as e:
+            logger.warning("[STOP-MON] %s sell error: %s", symbol, e)
+            continue
+        if result and not hasattr(result, "is_pdt"):
+            if isinstance(result, dict) and result.get("skipped") == "already_pending":
+                # A broker bracket leg is already working this exit — leave it be.
+                continue
+            try:
+                sold_value = float(pos.get("market_value") or 0)
+                risk.record_sale(sold_value)
+                store.log_execution(
+                    order_id=result.get("order_id", "") if isinstance(result, dict) else "",
+                    symbol=symbol, side="SELL", notional=sold_value,
+                    extra={"source": "stop_monitor", "reason": reason},
+                )
+            except Exception as e:
+                logger.warning("[STOP-MON] %s log error: %s", symbol, e)
+            logger.info("[STOP-MON] %s exited: %s", symbol, result)
 
 
 def main():
@@ -1837,6 +1998,14 @@ def main():
                     locked_symbols=frozenset(_hot_locked),
                     bar_stream=bar_stream,
                 )
+
+            # Software stop-monitor: protects extended-hours entries (no broker
+            # bracket possible) and backstops all positions. Runs every tick in
+            # regular AND extended hours, bypassing the market-hours sell gate.
+            _check_software_stops(
+                data_fetcher, executor, risk, store,
+                locked_symbols=frozenset(_hot_locked),
+            )
 
         else:
             logger.info("Market closed -- agent paused (pre-market 10:00-15:30 CET, regular 15:30-22:00 CET, post-market 22:00-02:00 CET)")

@@ -34,6 +34,8 @@ class ResearchStore:
             self._setup_sqlite()
         self._create_table()
         self._has_signal_type = self._check_signal_type_column()
+        self._ensure_catalyst_column()
+        self._has_catalyst_type = self._column_exists("catalyst_type")
 
     def _setup_postgres(self):
         import psycopg2
@@ -80,7 +82,8 @@ class ResearchStore:
                 risk_factors TEXT,
                 sources_used INTEGER,
                 expires_at {tz} NOT NULL,
-                signal_type TEXT DEFAULT 'FUNDAMENTAL'
+                signal_type TEXT DEFAULT 'FUNDAMENTAL',
+                catalyst_type TEXT DEFAULT 'GENERAL_NEWS'
             )
         """.format(
             serial="SERIAL" if self._backend == "postgres" else "INTEGER AUTOINCREMENT",
@@ -127,6 +130,53 @@ class ResearchStore:
             logger.warning("ResearchStore: could not check signal_type column: %s", e)
             return False
 
+    def _ensure_catalyst_column(self):
+        """
+        Best-effort add of the catalyst_type column to an existing table.
+        CREATE TABLE IF NOT EXISTS won't add a column to a table that already
+        exists (the live case), so attempt a non-destructive ALTER. If the app
+        user lacks ALTER privilege it fails harmlessly and the trader falls back
+        to conviction-only news admission until the column is added manually.
+        """
+        if self._column_exists("catalyst_type"):
+            return
+        try:
+            if self._backend == "postgres":
+                with self.conn.cursor() as cur:
+                    cur.execute(
+                        "ALTER TABLE research_signals "
+                        "ADD COLUMN IF NOT EXISTS catalyst_type TEXT DEFAULT 'GENERAL_NEWS'"
+                    )
+            else:
+                self.conn.execute(
+                    "ALTER TABLE research_signals ADD COLUMN catalyst_type TEXT DEFAULT 'GENERAL_NEWS'"
+                )
+                self.conn.commit()
+            logger.info("ResearchStore: added catalyst_type column")
+        except Exception as e:
+            logger.warning(
+                "ResearchStore: could not add catalyst_type column (%s); "
+                "news catalyst gating falls back to conviction-only until added.", e,
+            )
+
+    def _column_exists(self, column: str) -> bool:
+        """Generic check for whether a column exists on research_signals (no DDL)."""
+        try:
+            if self._backend == "postgres":
+                with self.conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'research_signals' AND column_name = %s",
+                        (column,),
+                    )
+                    return cur.fetchone() is not None
+            else:
+                cur = self.conn.execute("PRAGMA table_info(research_signals)")
+                return column in [row[1] for row in cur.fetchall()]
+        except Exception as e:
+            logger.warning("ResearchStore: could not check %s column: %s", column, e)
+            return False
+
     def write_signal(
         self,
         symbol: str,
@@ -139,6 +189,7 @@ class ResearchStore:
         sources_used: int,
         ttl_hours: int = 4,
         signal_type: str = "FUNDAMENTAL",
+        catalyst_type: str = None,
     ):
         """Write a research signal, replacing any existing signal for this symbol."""
         now = datetime.now(timezone.utc)
@@ -146,34 +197,27 @@ class ResearchStore:
 
         self._execute("DELETE FROM research_signals WHERE symbol = %s", (symbol,))
 
+        # Build the INSERT dynamically so it adapts to whichever optional
+        # columns actually exist in the live table (no ALTER TABLE required).
+        cols = [
+            "ts", "symbol", "sentiment", "conviction", "recommended_action",
+            "summary", "key_points", "risk_factors", "sources_used", "expires_at",
+        ]
+        vals = [
+            now.isoformat(), symbol, sentiment, conviction, recommended_action,
+            summary, json.dumps(key_points), json.dumps(risk_factors),
+            sources_used, expires.isoformat(),
+        ]
         if self._has_signal_type:
-            params = (
-                now.isoformat(), symbol, sentiment, conviction,
-                recommended_action, summary,
-                json.dumps(key_points), json.dumps(risk_factors),
-                sources_used, expires.isoformat(), signal_type,
-            )
-            sql = """
-                INSERT INTO research_signals
-                (ts, symbol, sentiment, conviction, recommended_action,
-                 summary, key_points, risk_factors, sources_used, expires_at, signal_type)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """
-        else:
-            params = (
-                now.isoformat(), symbol, sentiment, conviction,
-                recommended_action, summary,
-                json.dumps(key_points), json.dumps(risk_factors),
-                sources_used, expires.isoformat(),
-            )
-            sql = """
-                INSERT INTO research_signals
-                (ts, symbol, sentiment, conviction, recommended_action,
-                 summary, key_points, risk_factors, sources_used, expires_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """
+            cols.append("signal_type")
+            vals.append(signal_type)
+        if self._has_catalyst_type:
+            cols.append("catalyst_type")
+            vals.append(catalyst_type or "GENERAL_NEWS")
 
-        self._execute(sql, params)
+        placeholders = ",".join(["%s"] * len(vals))
+        sql = f"INSERT INTO research_signals ({', '.join(cols)}) VALUES ({placeholders})"
+        self._execute(sql, tuple(vals))
         logger.info(
             "Research signal written for %s: %s %.0f%% [%s]",
             symbol, sentiment, conviction * 100, signal_type,
@@ -209,8 +253,9 @@ class ResearchStore:
         """Return non-expired signals written at or after `since`."""
         now = datetime.now(timezone.utc).isoformat()
         since_iso = since.isoformat()
+        extra = ", catalyst_type" if self._has_catalyst_type else ""
         sql = (
-            "SELECT symbol, sentiment, conviction, recommended_action, signal_type "
+            f"SELECT symbol, sentiment, conviction, recommended_action, signal_type{extra} "
             "FROM research_signals WHERE ts >= %s AND expires_at > %s "
             "ORDER BY conviction DESC"
         )

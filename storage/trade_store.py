@@ -215,6 +215,30 @@ class TradeStore:
     def unlock_symbol(self, symbol: str) -> None:
         self._execute("DELETE FROM symbol_locks WHERE symbol = %s", (symbol,))
 
+    def get_latest_stops(self, symbols) -> dict:
+        """
+        Return {symbol: {"stop_loss": float|None, "take_profit": float|None}}
+        from the most recent BUY execution for each symbol. Used by the
+        software stop-monitor to protect positions (especially extended-hours
+        entries that cannot carry a broker bracket).
+        """
+        out = {}
+        for sym in symbols:
+            rows = self._fetchall(
+                "SELECT stop_loss, take_profit FROM executions "
+                "WHERE symbol = %s AND side = 'BUY' ORDER BY id DESC LIMIT 1",
+                (sym,),
+            )
+            if rows:
+                r = rows[0]
+                sl = r.get("stop_loss")
+                tp = r.get("take_profit")
+                out[sym] = {
+                    "stop_loss": float(sl) if sl is not None else None,
+                    "take_profit": float(tp) if tp is not None else None,
+                }
+        return out
+
     def get_locked_symbols(self) -> set:
         rows = self._fetchall("SELECT symbol FROM symbol_locks", ())
         return {r["symbol"] for r in rows}

@@ -73,12 +73,18 @@ class AlpacaExecutor:
     def __init__(self, config):
         try:
             from alpaca.trading.client import TradingClient
-            from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
-            from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus, OrderClass
+            from alpaca.trading.requests import (
+                MarketOrderRequest, LimitOrderRequest, GetOrdersRequest,
+                StopLossRequest, TakeProfitRequest,
+            )
             self._OrderSide = OrderSide
             self._TimeInForce = TimeInForce
+            self._OrderClass = OrderClass
             self._MarketOrderRequest = MarketOrderRequest
             self._LimitOrderRequest = LimitOrderRequest
+            self._StopLossRequest = StopLossRequest
+            self._TakeProfitRequest = TakeProfitRequest
             self._GetOrdersRequest = GetOrdersRequest
             self._QueryOrderStatus = QueryOrderStatus
 
@@ -104,10 +110,22 @@ class AlpacaExecutor:
         take_profit_price: Optional[float] = None,
         extended_hours: bool = False,
         limit_price: Optional[float] = None,
+        current_price: Optional[float] = None,
     ) -> Optional[dict]:
         """
-        Place a buy order. Uses a market order during regular hours; a limit order
-        with extended_hours=True during pre/post-market (Alpaca requirement).
+        Place a buy order.
+
+        Regular hours: submits a whole-share BRACKET order (entry + broker-side
+        stop-loss + take-profit as OCO children) when stop/target prices are
+        provided — this is the only way to get real broker-side protection.
+        Alpaca brackets require whole-share qty (no notional/fractional), so
+        notional is converted to shares via current_price (falls back to
+        limit_price). If no stop/target given, falls back to a plain notional
+        market order (fractional allowed, but unprotected).
+
+        Extended hours: Alpaca does NOT support bracket orders pre/post-market,
+        so this submits a plain whole-share limit order. Protection for these
+        entries is handled software-side by the stop-monitor in main.py.
         """
         try:
             if extended_hours and limit_price:
@@ -124,15 +142,46 @@ class AlpacaExecutor:
                     extended_hours=True,
                 )
                 logger.info(
-                    "BUY (EXT) %s | qty=%.4f | limit=$%.2f | notional≈$%.2f | paper=%s",
+                    "BUY (EXT, no broker stop — software-monitored) %s | qty=%d | limit=$%.2f | notional≈$%.2f | paper=%s",
                     symbol, qty, limit_price, notional, self.paper,
                 )
+            elif stop_loss_price and take_profit_price and (current_price or limit_price):
+                # Regular-hours BRACKET order — real broker-side protection.
+                ref_price = current_price or limit_price
+                qty = math.floor(notional / ref_price)  # brackets require whole shares
+                if qty <= 0:
+                    logger.warning(
+                        "BUY %s skipped — bracket qty=0 at price=$%.2f (notional=$%.2f); "
+                        "account too small for one share.", symbol, ref_price, notional,
+                    )
+                    return None
+                # Stop must be below entry and target above; guard against inversion.
+                stop_px = round(stop_loss_price, 2)
+                tp_px = round(take_profit_price, 2)
+                order_req = self._MarketOrderRequest(
+                    symbol=symbol,
+                    qty=qty,
+                    side=self._OrderSide.BUY,
+                    time_in_force=self._TimeInForce.DAY,
+                    order_class=self._OrderClass.BRACKET,
+                    stop_loss=self._StopLossRequest(stop_price=stop_px),
+                    take_profit=self._TakeProfitRequest(limit_price=tp_px),
+                )
+                logger.info(
+                    "BUY (BRACKET) %s | qty=%d | ~$%.2f | stop=$%.2f | target=$%.2f | notional≈$%.2f | paper=%s",
+                    symbol, qty, ref_price, stop_px, tp_px, notional, self.paper,
+                )
             else:
+                # No stop/target available — unprotected notional market order (legacy path).
                 order_req = self._MarketOrderRequest(
                     symbol=symbol,
                     notional=round(notional, 2),
                     side=self._OrderSide.BUY,
                     time_in_force=self._TimeInForce.DAY,
+                )
+                logger.warning(
+                    "BUY %s | notional=$%.2f | NO stop/target provided — unprotected market order",
+                    symbol, notional,
                 )
             order = self.client.submit_order(order_req)
 
@@ -308,8 +357,9 @@ class AlpacaExecutor:
                     logger.error(
                         "SELL %s BLOCKED -- Pattern Day Trader protection (code=%d). "
                         "Position cannot be closed today due to PDT rules. "
-                        "The stop-loss bracket order at Alpaca is still active and will "
-                        "protect the position. Agent will not retry this sell today.",
+                        "If this position was opened regular-hours it has a broker "
+                        "bracket stop; extended-hours entries rely on the software "
+                        "stop-monitor. Agent will not retry this sell today.",
                         symbol, error.code,
                     )
                     if self._notify:

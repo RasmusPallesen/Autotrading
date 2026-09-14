@@ -420,6 +420,7 @@ def _make_news_handler(
                         sources_used=1,
                         ttl_hours=ttl,
                         signal_type="NEWS_SENTIMENT",
+                        catalyst_type=signal_type,  # FDA_EVENT / EARNINGS_SURPRISE / GENERAL_NEWS / ...
                     )
                     written.append(sym)
                 except Exception as we:
