@@ -53,8 +53,22 @@ MINI_INTERVAL  = 180  # seconds — re-evaluate held positions (3 min; hot path 
 SWEEP_INTERVAL = 900  # seconds — full symbol sweep (hot path is primary discovery)
 
 # News hot-path: immediately evaluate symbols with fresh high-conviction news signals
-NEWS_HOT_THRESHOLD = 0.65   # min conviction to trigger immediate eval
+NEWS_HOT_THRESHOLD = 0.70   # min conviction to trigger immediate eval (raised 0.65→0.70 to match news agent BUY bar)
 NEWS_HOT_OVERLAP   = 10     # seconds of lookback overlap to avoid boundary gaps
+
+# News de-risk gates
+NEWS_SWEEP_THRESHOLD = 0.55  # min conviction for a news discovery to enter the sweep (above scanner's 0.50)
+# Only these Claude-classified catalysts are tradeable. GENERAL_NEWS is
+# watch-only (shown on dashboard, never admitted to trading) because it is the
+# noisiest, lowest-signal category.
+TRADEABLE_CATALYSTS = frozenset({
+    "FDA_EVENT", "EARNINGS_SURPRISE", "ANALYST_ACTION",
+    "PARTNERSHIP", "GUIDANCE_CHANGE", "LEGAL_RISK",
+})
+# Chase guard: don't buy a news name that has already run up this much on the
+# day (measured vs previous close). By the time the news feed surfaces the
+# story the move is often mostly done — chasing it buys the top (CUPR/UUUU).
+NEWS_CHASE_LIMIT = 0.15  # 15%
 
 # ── Dynamic stream subscriptions ─────────────────────────────────────────────
 # Symbols discovered by scanners that are not in the core watchlist.
@@ -580,15 +594,21 @@ def get_dynamic_symbols(
             summary     = signal.get("summary", "").lower()
 
             if signal_type == "NEWS_SENTIMENT":
-                # News signals are pre-filtered by Claude — admit on conviction alone.
-                # The is_scanner_hit keyword check targets price/volume vocabulary
-                # ("surge", "vwap", etc.) that never appears in news summaries.
-                if conviction >= RESEARCH_GATE_THRESHOLD:
+                # News signals are pre-filtered by Claude — admit on conviction and
+                # catalyst quality. The is_scanner_hit keyword check targets
+                # price/volume vocabulary ("surge", "vwap", etc.) that never
+                # appears in news summaries.
+                catalyst = str(signal.get("catalyst_type", "GENERAL_NEWS") or "GENERAL_NEWS")
+                if catalyst not in TRADEABLE_CATALYSTS:
+                    logger.debug(
+                        "News discovery skipped (watch-only catalyst %s): %s", catalyst, symbol,
+                    )
+                elif conviction >= NEWS_SWEEP_THRESHOLD:
                     active_symbols.append(symbol)
                     discovered_symbols.append(symbol)
                     logger.info(
-                        "News discovery added: %s (conviction=%.0f%%)",
-                        symbol, conviction * 100,
+                        "News discovery added: %s (conviction=%.0f%%, catalyst=%s)",
+                        symbol, conviction * 100, catalyst,
                     )
             else:
                 is_scanner_hit = (
@@ -1530,8 +1550,12 @@ def _drain_news_signals(
         symbol   = sig.get("symbol", "")
         conv     = float(sig.get("conviction", 0))
         sig_type = sig.get("signal_type", "")
+        catalyst = str(sig.get("catalyst_type", "GENERAL_NEWS") or "GENERAL_NEWS")
 
         if conv < NEWS_HOT_THRESHOLD:
+            continue
+        if catalyst not in TRADEABLE_CATALYSTS:
+            # GENERAL_NEWS and other watch-only catalysts never trigger a trade.
             continue
         if symbol in locked_symbols:
             continue
@@ -1639,6 +1663,17 @@ def _drain_news_signals(
         if decision.action == "BUY" and symbol not in positions_map:
             if executor.is_pdt_blocked:
                 continue
+            # Chase guard — skip if the stock has already run up too far today.
+            try:
+                day_move = data_fetcher.get_premarket_move(symbol)
+            except Exception:
+                day_move = None
+            if day_move is not None and day_move >= NEWS_CHASE_LIMIT:
+                logger.info(
+                    "[NEWS HOT] %s BUY skipped — already +%.0f%% on the day (chase guard, limit %.0f%%)",
+                    symbol, day_move * 100, NEWS_CHASE_LIMIT * 100,
+                )
+                continue
             stop, target = risk.compute_stop_and_target(price, decision, atr=_atr)
             result = executor.buy(
                 symbol, verdict.adjusted_notional, stop, target,
@@ -1649,6 +1684,7 @@ def _drain_news_signals(
                 store.log_execution(
                     order_id=result["order_id"], symbol=symbol, side="BUY",
                     notional=verdict.adjusted_notional, stop_loss=stop, take_profit=target,
+                    extra={"source": "news_hot", "catalyst": catalyst},
                 )
                 logger.info("[NEWS HOT] BUY %s executed: %s", symbol, result)
 
