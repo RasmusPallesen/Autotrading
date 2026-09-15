@@ -283,14 +283,27 @@ class RiskManager:
     def compute_stop_and_target(
         self, current_price: float, decision: TradeDecision, atr: float = None
     ) -> tuple:
-        """Compute stop-loss and take-profit prices. Uses ATR-based levels when available."""
-        if atr and atr > 0:
-            # ATR-based swing-trade stops: 2× ATR stop, 4× ATR target (2:1 reward/risk)
-            stop_loss = current_price - atr * 2.0
-            take_profit = current_price + atr * 4.0
+        """Compute stop-loss and take-profit prices. Uses ATR-based levels when available.
+
+        `atr` is expected to be a DAILY ATR (swing-trade volatility). The stop
+        distance is clamped to [MIN_STOP_PCT, MAX_STOP_PCT] of price so that
+        neither an accidentally tiny ATR (e.g. an intraday ATR) nor an extreme
+        one produces a noise-level or absurd stop. Target keeps ~2.5:1 R:R.
+        """
+        MIN_STOP_PCT = 0.03   # never risk a stop tighter than 3% (kills churn)
+        MAX_STOP_PCT = 0.10   # never wider than 10%
+        RR = 2.5              # reward:risk
+
+        if atr and atr > 0 and current_price and current_price > 0:
+            stop_dist_pct = (atr * 2.0) / current_price
+            stop_dist_pct = max(MIN_STOP_PCT, min(stop_dist_pct, MAX_STOP_PCT))
+            target_dist_pct = stop_dist_pct * RR
+            stop_loss = current_price * (1 - stop_dist_pct)
+            take_profit = current_price * (1 + target_dist_pct)
             logger.debug(
-                "[%s] ATR stops: price=%.2f atr=%.4f stop=%.2f target=%.2f",
-                decision.symbol, current_price, atr, stop_loss, take_profit,
+                "[%s] ATR stops: price=%.2f atr=%.4f stop=%.2f (%.1f%%) target=%.2f (%.1f%%)",
+                decision.symbol, current_price, atr, stop_loss, stop_dist_pct * 100,
+                take_profit, target_dist_pct * 100,
             )
         else:
             sl_pct = max(0.01, min(decision.suggested_stop_loss_pct, self.stop_loss_pct))

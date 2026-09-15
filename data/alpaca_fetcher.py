@@ -28,6 +28,7 @@ class AlpacaDataFetcher:
             self.trading_client = TradingClient(
                 config.api_key, config.secret_key, paper=config.paper
             )
+            self._daily_atr_cache: Dict[str, tuple] = {}  # symbol -> (date, atr|None)
             logger.info("AlpacaDataFetcher initialised (paper=%s)", config.paper)
         except ImportError:
             raise ImportError("Install alpaca-py: pip install alpaca-py")
@@ -50,8 +51,17 @@ class AlpacaDataFetcher:
         }
         tf = tf_map.get(timeframe, TimeFrame.Minute)
 
+        # Size the lookback window by timeframe. The old hours-only heuristic
+        # (~5 days) was far too short for daily/hourly bars — a request for 20
+        # daily bars would silently return only ~4.
         end = datetime.now(timezone.utc)
-        start = end - timedelta(hours=max(lookback_bars * 2, 120))
+        if timeframe == "1Day":
+            # Calendar days must cover weekends/holidays to yield lookback_bars sessions.
+            start = end - timedelta(days=lookback_bars * 2 + 15)
+        elif timeframe == "1Hour":
+            start = end - timedelta(days=max(lookback_bars // 6 + 5, 10))
+        else:
+            start = end - timedelta(hours=max(lookback_bars * 2, 120))
 
         result: Dict[str, pd.DataFrame] = {}
 
@@ -160,3 +170,39 @@ class AlpacaDataFetcher:
         except Exception as e:
             logger.warning("Could not fetch pre-market move for %s: %s", symbol, e)
             return None
+
+    def get_daily_atr(self, symbol: str, period: int = 14) -> Optional[float]:
+        """
+        Return the 14-period ATR computed on DAILY bars — the swing-trade
+        volatility the risk manager's 2x/4x stop/target and position sizing were
+        designed for. (Intraday 1-minute ATR is ~20x smaller and produces
+        noise-level stops.) Cached once per symbol per UTC date. None on failure.
+        """
+        today = datetime.now(timezone.utc).date()
+        cached = self._daily_atr_cache.get(symbol)
+        if cached and cached[0] == today:
+            return cached[1]
+
+        atr_val: Optional[float] = None
+        try:
+            bars = self.get_bars([symbol], lookback_bars=period + 6, timeframe="1Day")
+            df = bars.get(symbol)
+            if df is not None and len(df) >= period + 1:
+                high = df["high"].astype(float)
+                low = df["low"].astype(float)
+                close = df["close"].astype(float)
+                prev_close = close.shift(1)
+                tr = pd.concat([
+                    high - low,
+                    (high - prev_close).abs(),
+                    (low - prev_close).abs(),
+                ], axis=1).max(axis=1)
+                atr_series = tr.rolling(window=period).mean()
+                val = atr_series.iloc[-1]
+                if val is not None and float(val) > 0:
+                    atr_val = float(val)
+        except Exception as e:
+            logger.warning("Could not compute daily ATR for %s: %s", symbol, e)
+
+        self._daily_atr_cache[symbol] = (today, atr_val)
+        return atr_val

@@ -74,6 +74,23 @@ NEWS_CHASE_LIMIT = 0.15  # 15%
 STOP_MON_COOLDOWN = 60
 _stop_attempts: dict = {}
 
+# Re-entry cooldown: don't re-buy a symbol we just stopped out of (anti-churn).
+REENTRY_COOLDOWN = 1800  # 30 minutes
+_recent_stopouts: dict = {}  # symbol -> unix ts of last stop-out exit
+
+
+def _risk_atr(symbol: str, data_fetcher: AlpacaDataFetcher):
+    """Daily ATR for risk sizing/stops (None → risk manager uses pct fallback)."""
+    try:
+        return data_fetcher.get_daily_atr(symbol)
+    except Exception:
+        return None
+
+
+def _in_reentry_cooldown(symbol: str) -> bool:
+    ts = _recent_stopouts.get(symbol)
+    return ts is not None and (time.time() - ts) < REENTRY_COOLDOWN
+
 # ── Dynamic stream subscriptions ─────────────────────────────────────────────
 # Symbols discovered by scanners that are not in the core watchlist.
 # Subscribed to the WebSocket stream within 60 seconds of discovery so the
@@ -1071,7 +1088,9 @@ def run_loop(
             continue
 
         _snap = snapshots_map.get(decision.symbol)
-        _atr = _snap.atr_14 if _snap else None
+        # Daily ATR for risk sizing/stops (1-min snapshot ATR is ~20x too small
+        # and produces noise-level stops → churn). None → risk pct fallback.
+        _atr = _risk_atr(decision.symbol, data_fetcher) if decision.action == "BUY" else (_snap.atr_14 if _snap else None)
         _snap_price = _snap.current_price if _snap else None
         verdict = risk.check(
             decision=decision,
@@ -1111,6 +1130,14 @@ def run_loop(
             if executor.is_pdt_blocked:
                 logger.warning(
                     "[%s] BUY skipped -- PDT block active this session",
+                    decision.symbol,
+                )
+                continue
+
+            # Anti-churn: don't re-buy a symbol we just stopped out of.
+            if _in_reentry_cooldown(decision.symbol):
+                logger.info(
+                    "[%s] BUY skipped -- re-entry cooldown after recent stop-out",
                     decision.symbol,
                 )
                 continue
@@ -1324,7 +1351,10 @@ def run_mini_loop(
             getattr(decision, "urgency", "?"),
         )
 
-        _atr = snapshot.atr_14 if snapshot else None
+        _atr = _risk_atr(symbol, data_fetcher) if decision.action == "BUY" else (snapshot.atr_14 if snapshot else None)
+        if decision.action == "BUY" and _in_reentry_cooldown(symbol):
+            logger.info("[MINI] %s BUY skipped — re-entry cooldown after stop-out", symbol)
+            continue
         verdict = risk.check(
             decision, portfolio, positions,
             min_confidence=config.agent.min_confidence,
@@ -1486,6 +1516,9 @@ def _drain_hot_queue(
 
             # Apply regime filter to BUYs — read cached value (no extra API call)
             if decision.action == "BUY":
+                if _in_reentry_cooldown(symbol):
+                    logger.debug("[HOT PATH] BUY %s skipped — re-entry cooldown after stop-out", symbol)
+                    continue
                 _hot_regime = _regime_cache[0]
                 if _hot_regime == "BLOCKED":
                     logger.debug("[HOT PATH] BUY %s blocked — regime BLOCKED", symbol)
@@ -1501,7 +1534,7 @@ def _drain_hot_queue(
                     )
 
             # Risk check + execution (same path as normal loop)
-            _atr = snapshot.atr_14 if snapshot else None
+            _atr = _risk_atr(symbol, data_fetcher) if decision.action == "BUY" else (snapshot.atr_14 if snapshot else None)
             verdict = risk.check(
                 decision, portfolio, positions,
                 min_confidence=config.agent.min_confidence,
@@ -1678,7 +1711,7 @@ def _drain_news_signals(
             getattr(decision, "urgency", "?"),
         )
 
-        _atr = snapshot.atr_14 if snapshot else None
+        _atr = _risk_atr(symbol, data_fetcher) if decision.action == "BUY" else (snapshot.atr_14 if snapshot else None)
         verdict = risk.check(
             decision, portfolio, positions,
             min_confidence=config.agent.min_confidence,
@@ -1694,6 +1727,9 @@ def _drain_news_signals(
 
         if decision.action == "BUY" and symbol not in positions_map:
             if executor.is_pdt_blocked:
+                continue
+            if _in_reentry_cooldown(symbol):
+                logger.info("[NEWS HOT] %s BUY skipped — re-entry cooldown after stop-out", symbol)
                 continue
             # Chase guard — skip if the stock has already run up too far today.
             try:
@@ -1851,6 +1887,8 @@ def _check_software_stops(
                 )
             except Exception as e:
                 logger.warning("[STOP-MON] %s log error: %s", symbol, e)
+            if is_stop:
+                _recent_stopouts[symbol] = now  # anti-churn: block quick re-entry
             logger.info("[STOP-MON] %s exited: %s", symbol, result)
 
 
