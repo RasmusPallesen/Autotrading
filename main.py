@@ -70,6 +70,10 @@ TRADEABLE_CATALYSTS = frozenset({
 # story the move is often mostly done — chasing it buys the top (CUPR/UUUU).
 NEWS_CHASE_LIMIT = 0.15  # 15%
 
+# Stop-monitor per-symbol action cooldown (seconds) — prevents 5s log/cancel spam
+STOP_MON_COOLDOWN = 60
+_stop_attempts: dict = {}
+
 # ── Dynamic stream subscriptions ─────────────────────────────────────────────
 # Symbols discovered by scanners that are not in the core watchlist.
 # Subscribed to the WebSocket stream within 60 seconds of discovery so the
@@ -1753,10 +1757,14 @@ def _check_software_stops(
     crucially bypassing the is_market_open() gate that blocks all other
     held-position sells, so a pre/post-market entry can actually be stopped out.
 
-    Regular-hours positions opened with a broker bracket are unaffected: their
-    stop/target legs show as open orders, and executor.sell() skips any symbol
-    with a pending order, so the monitor never fights or duplicates a live
-    bracket. It is a backstop there and the primary protection in extended hours.
+    Regular hours: the broker bracket is live and fills on its own, so the
+    monitor defers to it (executor.sell skips a symbol with a pending order).
+
+    Extended hours: a resting bracket leg (stop/market order) is DORMANT —
+    Alpaca can't execute it until the regular open — so deferring would leave
+    the position unprotected. Here the monitor actively CANCELS the dormant
+    bracket and replaces it with a marketable extended-hours limit sell
+    (replace_pending=True). A per-symbol cooldown prevents cancel/replace spam.
     """
     if executor.is_pdt_blocked:
         return
@@ -1794,27 +1802,44 @@ def _check_software_stops(
         if not price:
             continue
 
+        is_stop = stop_px is not None and price <= stop_px
         reason = None
-        if stop_px is not None and price <= stop_px:
+        if is_stop:
             reason = f"stop-loss (price ${price:.2f} <= ${stop_px:.2f})"
         elif tp_px is not None and price >= tp_px:
             reason = f"take-profit (price ${price:.2f} >= ${tp_px:.2f})"
         if not reason:
             continue
 
+        # Per-symbol cooldown — avoids 5s log/cancel spam while an exit works.
+        now = time.time()
+        if now - _stop_attempts.get(symbol, 0) < STOP_MON_COOLDOWN:
+            continue
+
         logger.info("[STOP-MON] %s exit triggered — %s%s", symbol, reason,
                     " [extended hours]" if _ext else "")
+        _stop_attempts[symbol] = now  # stamp attempt for ALL paths (stops 5s spam)
         try:
-            result = executor.sell(
-                symbol, close_all=True,
-                extended_hours=_ext, limit_price=price if _ext else None,
-            )
+            if _ext:
+                # Extended hours: the broker bracket is dormant. Cancel it and
+                # place a marketable extended-hours limit that can actually fill
+                # (price a stop-out slightly through last trade to cross the spread).
+                limit_px = round(price * 0.995, 2) if is_stop else round(price, 2)
+                result = executor.sell(
+                    symbol, close_all=True,
+                    extended_hours=True, limit_price=limit_px,
+                    replace_pending=True,
+                )
+            else:
+                # Regular hours: defer to the live broker bracket (fills instantly).
+                # executor.sell skips if the bracket leg is pending; that's fine.
+                result = executor.sell(symbol, close_all=True)
         except Exception as e:
             logger.warning("[STOP-MON] %s sell error: %s", symbol, e)
             continue
         if result and not hasattr(result, "is_pdt"):
             if isinstance(result, dict) and result.get("skipped") == "already_pending":
-                # A broker bracket leg is already working this exit — leave it be.
+                # Regular hours: a live broker bracket leg is working this exit.
                 continue
             try:
                 sold_value = float(pos.get("market_value") or 0)

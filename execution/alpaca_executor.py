@@ -245,10 +245,18 @@ class AlpacaExecutor:
         close_all: bool = False,
         extended_hours: bool = False,
         limit_price: Optional[float] = None,
+        replace_pending: bool = False,
     ) -> Optional[dict]:
         """
         Place a sell order. Uses close_position() (market) during regular hours;
         a limit order with extended_hours=True during pre/post-market.
+
+        By default, if any order is already open for the symbol the sell is
+        skipped (avoids duplicate/oversell). Pass replace_pending=True to instead
+        CANCEL those open orders first and proceed — used by the stop-monitor in
+        extended hours, where a resting broker bracket leg (a stop/market order)
+        is dormant and cannot execute, so it must be replaced with an
+        extended-hours limit that can actually fill.
         """
         try:
             open_orders = self.client.get_orders(
@@ -258,18 +266,26 @@ class AlpacaExecutor:
                 )
             )
             if open_orders:
-                logger.warning(
-                    "SELL %s skipped — %d open order(s) already pending (ids: %s)",
-                    symbol,
-                    len(open_orders),
-                    ", ".join(str(o.id) for o in open_orders),
-                )
-                return {
-                    "order_id": str(open_orders[0].id),
-                    "symbol": symbol,
-                    "side": "SELL",
-                    "skipped": "already_pending",
-                }
+                if replace_pending:
+                    logger.info(
+                        "SELL %s — cancelling %d pending order(s) to replace (ids: %s)",
+                        symbol, len(open_orders),
+                        ", ".join(str(o.id) for o in open_orders),
+                    )
+                    self.cancel_orders_for_symbol(symbol)
+                else:
+                    logger.warning(
+                        "SELL %s skipped — %d open order(s) already pending (ids: %s)",
+                        symbol,
+                        len(open_orders),
+                        ", ".join(str(o.id) for o in open_orders),
+                    )
+                    return {
+                        "order_id": str(open_orders[0].id),
+                        "symbol": symbol,
+                        "side": "SELL",
+                        "skipped": "already_pending",
+                    }
         except Exception as e:
             logger.warning("Could not check open orders for %s: %s — proceeding with sell", symbol, e)
 
@@ -385,6 +401,29 @@ class AlpacaExecutor:
                 return error
             logger.error("Failed to place SELL for %s: %s", symbol, e)
             return None
+
+    def cancel_orders_for_symbol(self, symbol: str) -> int:
+        """Cancel all OPEN orders for a single symbol. Returns count attempted."""
+        try:
+            open_orders = self.client.get_orders(
+                self._GetOrdersRequest(
+                    status=self._QueryOrderStatus.OPEN,
+                    symbols=[symbol],
+                )
+            )
+        except Exception as e:
+            logger.warning("Could not list open orders for %s to cancel: %s", symbol, e)
+            return 0
+        n = 0
+        for o in open_orders:
+            try:
+                self.client.cancel_order_by_id(o.id)
+                n += 1
+            except Exception as e:
+                logger.warning("Failed to cancel order %s for %s: %s", o.id, symbol, e)
+        if n:
+            logger.info("Cancelled %d open order(s) for %s", n, symbol)
+        return n
 
     def cancel_all_orders(self):
         """Emergency: cancel all open orders."""
